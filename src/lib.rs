@@ -40,9 +40,15 @@ const TAG_MIME: u8 = 0x49;
 #[derive(Debug, Clone)]
 pub struct Found {
     pub ip: IpAddr,
-    /// `None` gdy port 631 jest otwarty, ale urządzenie nie odpowiedziało jak drukarka IPP.
+    /// Model z IPP albo ze strony WWW drukarki.
     pub model: Option<String>,
+    /// Drukarka odpowiada przez IPP (port 631).
+    pub ipp: bool,
+    /// Drukarka ma otwarty port 9100 (druk przez sterownik / CUPS).
+    pub raw: bool,
 }
+
+pub const RAW_PORT: u16 = 9100;
 
 #[derive(Debug, Clone)]
 pub struct Ink {
@@ -362,29 +368,110 @@ pub fn local_ipv4() -> Option<Ipv4Addr> {
     }
 }
 
-/// Przeszukuje sieć lokalną /24 w poszukiwaniu urządzeń z otwartym portem IPP.
-pub fn scan() -> Result<Vec<Found>, String> {
-    let me = local_ipv4().ok_or("nie mogę ustalić adresu IP komputera – czy jesteś w sieci?")?;
-    let [a, b, c, _] = me.octets();
+fn port_open(ip: IpAddr, port: u16, ms: u64) -> bool {
+    TcpStream::connect_timeout(&SocketAddr::new(ip, port), Duration::from_millis(ms)).is_ok()
+}
+
+/// Odczytuje nazwę drukarki z jej strony WWW (port 80) – dla drukarek bez IPP.
+pub fn web_model(ip: IpAddr) -> Option<String> {
+    let mut path = "/".to_string();
+    for _ in 0..3 {
+        let mut s = TcpStream::connect_timeout(&SocketAddr::new(ip, 80), Duration::from_secs(2)).ok()?;
+        s.set_read_timeout(Some(Duration::from_secs(3))).ok();
+        let req = format!("GET {path} HTTP/1.0\r\nHost: {ip}\r\nConnection: close\r\n\r\n");
+        s.write_all(req.as_bytes()).ok()?;
+        let mut buf = Vec::new();
+        let _ = s.take(256 * 1024).read_to_end(&mut buf);
+        let text = String::from_utf8_lossy(&buf).to_string();
+        let lower = text.to_lowercase();
+
+        // Przekierowanie (np. Epson → /PRESENTATION/HTML/TOP/PRTINFO.HTML)
+        let head_end = lower.find("\r\n\r\n").unwrap_or(lower.len());
+        if let Some(loc) = lower[..head_end].lines().find(|l| l.starts_with("location:")) {
+            let orig = &text[lower.find(loc).unwrap_or(0)..];
+            let target = orig["location:".len()..].lines().next().unwrap_or("").trim().to_string();
+            let p = if let Some(rest) = target.strip_prefix("http://") {
+                rest.find('/').map(|i| rest[i..].to_string()).unwrap_or("/".into())
+            } else if target.starts_with('/') {
+                target
+            } else {
+                break;
+            };
+            if p != path {
+                path = p;
+                continue;
+            }
+        }
+        if let (Some(a), Some(b)) = (lower.find("<title>"), lower.find("</title>")) {
+            if b > a + 7 {
+                let t = text[a + 7..b].trim().replace("&nbsp;", " ");
+                if !t.is_empty() {
+                    let t = if t.to_lowercase().contains("epson") { t } else { format!("EPSON {t}") };
+                    return Some(t);
+                }
+            }
+        }
+        if lower.contains("epson") {
+            return Some("EPSON".into());
+        }
+        break;
+    }
+    None
+}
+
+/// Sprawdza jeden adres: IPP, port 9100 i model.
+pub fn probe(ip: IpAddr) -> Option<Found> {
+    let ipp = port_open(ip, IPP_PORT, 500);
+    let raw = port_open(ip, RAW_PORT, 500);
+    if !ipp && !raw {
+        return None;
+    }
+    let mut model = None;
+    if ipp {
+        model = get_attributes(ip, Duration::from_secs(3))
+            .ok()
+            .filter(|r| r.ok())
+            .map(|r| r.text("printer-make-and-model"));
+    }
+    if model.is_none() {
+        model = web_model(ip);
+    }
+    Some(Found { ip, model, ipp, raw })
+}
+
+/// Przeszukuje sieć lokalną komputera (/24) oraz opcjonalnie sieć podanego adresu
+/// (np. osobną sieć smart home, w której stoi drukarka).
+pub fn scan_with(extra: Option<Ipv4Addr>) -> Result<Vec<Found>, String> {
+    let mut nets: Vec<[u8; 3]> = Vec::new();
+    if let Some(me) = local_ipv4() {
+        let [a, b, c, _] = me.octets();
+        nets.push([a, b, c]);
+    }
+    if let Some(x) = extra {
+        let [a, b, c, _] = x.octets();
+        if !nets.contains(&[a, b, c]) {
+            nets.push([a, b, c]);
+        }
+    }
+    if nets.is_empty() {
+        return Err("nie mogę ustalić adresu IP komputera – czy jesteś w sieci?".into());
+    }
 
     let (tx, rx) = mpsc::channel();
     let mut watki = Vec::new();
-    for chunk in (1u8..=254).collect::<Vec<_>>().chunks(16) {
-        let chunk = chunk.to_vec();
-        let tx = tx.clone();
-        watki.push(thread::spawn(move || {
-            for d in chunk {
-                let ip = IpAddr::V4(Ipv4Addr::new(a, b, c, d));
-                let addr = SocketAddr::new(ip, IPP_PORT);
-                if TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok() {
-                    let model = get_attributes(ip, Duration::from_secs(3))
-                        .ok()
-                        .filter(|r| r.ok())
-                        .map(|r| r.text("printer-make-and-model"));
-                    tx.send(Found { ip, model }).ok();
+    for net in nets {
+        for chunk in (1u8..=254).collect::<Vec<_>>().chunks(16) {
+            let chunk = chunk.to_vec();
+            let tx = tx.clone();
+            watki.push(thread::spawn(move || {
+                for d in chunk {
+                    let ip = IpAddr::V4(Ipv4Addr::new(net[0], net[1], net[2], d));
+                    if let Some(f) = probe(ip) {
+                        tx.send(f).ok();
+                    }
                 }
-            }
-        }));
+            }));
+        }
     }
     drop(tx);
     for w in watki {
@@ -393,6 +480,11 @@ pub fn scan() -> Result<Vec<Found>, String> {
     let mut out: Vec<Found> = rx.iter().collect();
     out.sort_by_key(|f| f.ip);
     Ok(out)
+}
+
+/// Przeszukuje sieć lokalną /24.
+pub fn scan() -> Result<Vec<Found>, String> {
+    scan_with(None)
 }
 
 fn state_word(v: Option<&Vec<Val>>) -> &'static str {

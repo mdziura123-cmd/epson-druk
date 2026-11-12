@@ -1,5 +1,6 @@
 //! Epson Druk – aplikacja z okienkiem (Tauri 2).
 
+mod cups;
 mod updater;
 
 use epson_druk as ipp;
@@ -20,6 +21,8 @@ use tauri::Manager;
 struct FoundDto {
     ip: String,
     model: Option<String>,
+    ipp: bool,
+    raw: bool,
 }
 
 #[derive(Serialize)]
@@ -39,6 +42,12 @@ struct StatusDto {
     inks: Vec<InkDto>,
     formats: Vec<String>,
     color_supported: bool,
+    /// "ipp" – bezpośrednio, "cups" – przez sterownik (port 9100).
+    mode: String,
+    /// Tryb cups: kolejka w systemie ustawiona na ten adres.
+    queue_ready: bool,
+    /// Tryb cups: brak sterownika Epsona w systemie.
+    driver_missing: bool,
 }
 
 #[derive(Serialize)]
@@ -196,18 +205,83 @@ fn save_printer(app: tauri::AppHandle, ip: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn scan() -> Result<Vec<FoundDto>, String> {
-    let found = blocking(ipp::scan).await?;
+async fn scan(extra: Option<String>) -> Result<Vec<FoundDto>, String> {
+    let extra_v4 = extra
+        .as_deref()
+        .and_then(|s| s.trim().parse::<std::net::Ipv4Addr>().ok());
+    let found = blocking(move || ipp::scan_with(extra_v4)).await?;
     Ok(found
         .into_iter()
-        .map(|f| FoundDto { ip: f.ip.to_string(), model: f.model })
+        .map(|f| FoundDto { ip: f.ip.to_string(), model: f.model, ipp: f.ipp, raw: f.raw })
         .collect())
+}
+
+fn port_open(ip: IpAddr, port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::new(ip, port),
+        std::time::Duration::from_millis(1500),
+    )
+    .is_ok()
+}
+
+/// Czy drukarka obsługuje IPP (port 631)? Jeśli nie – drukujemy przez CUPS.
+fn uses_ipp(ip: IpAddr) -> bool {
+    port_open(ip, ipp::IPP_PORT)
+}
+
+fn cups_status(ip: IpAddr, ip_str: String) -> Result<StatusDto, String> {
+    if !port_open(ip, ipp::RAW_PORT) {
+        return Err(format!(
+            "drukarka pod adresem {ip} nie odpowiada. Sprawdź, czy jest włączona i czy router \
+             nie blokuje połączenia (izolacja sieci smart home)."
+        ));
+    }
+    let model = ipp::web_model(ip).unwrap_or_else(|| "EPSON L3150 Series".into());
+    let ready = cups::queue_ready_for(&ip_str);
+    let (state, message, driver_missing) = if ready {
+        let (st, msg) = cups::state();
+        (st, msg, false)
+    } else {
+        let missing = cups::find_driver(&model).is_none();
+        ("wymaga konfiguracji".to_string(), String::new(), missing)
+    };
+    Ok(StatusDto {
+        ip: ip_str,
+        model,
+        state,
+        reasons: Vec::new(),
+        message,
+        inks: Vec::new(),
+        formats: Vec::new(),
+        color_supported: true,
+        mode: "cups".into(),
+        queue_ready: ready,
+        driver_missing,
+    })
+}
+
+#[tauri::command]
+async fn setup_printer(ip: String, model: String) -> Result<(), String> {
+    parse_ip(&ip)?;
+    blocking(move || cups::setup(ip.trim(), &model)).await
 }
 
 #[tauri::command]
 async fn status(ip: String) -> Result<StatusDto, String> {
     let addr = parse_ip(&ip)?;
-    let s = blocking(move || ipp::status(addr)).await?;
+    let ip2 = ip.clone();
+    let s = match blocking(move || {
+        if uses_ipp(addr) {
+            ipp::status(addr).map(Ok)
+        } else {
+            cups_status(addr, ip2).map(Err)
+        }
+    })
+    .await?
+    {
+        Ok(s) => s,
+        Err(cups_dto) => return Ok(cups_dto),
+    };
     Ok(StatusDto {
         ip,
         model: s.model,
@@ -221,23 +295,42 @@ async fn status(ip: String) -> Result<StatusDto, String> {
             .collect(),
         formats: s.formats,
         color_supported: s.color_supported,
+        mode: "ipp".into(),
+        queue_ready: true,
+        driver_missing: false,
     })
 }
 
 #[tauri::command]
 async fn jobs(ip: String) -> Result<Vec<JobDto>, String> {
     let addr = parse_ip(&ip)?;
-    let j = blocking(move || ipp::jobs(addr)).await?;
-    Ok(j
-        .into_iter()
-        .map(|j| JobDto { id: j.id, name: j.name, state: j.state })
-        .collect())
+    blocking(move || {
+        if uses_ipp(addr) {
+            Ok(ipp::jobs(addr)?
+                .into_iter()
+                .map(|j| JobDto { id: j.id, name: j.name, state: j.state })
+                .collect())
+        } else {
+            Ok(cups::jobs()
+                .into_iter()
+                .map(|(id, name, state)| JobDto { id, name, state })
+                .collect())
+        }
+    })
+    .await
 }
 
 #[tauri::command]
 async fn cancel(ip: String, id: i32) -> Result<(), String> {
     let addr = parse_ip(&ip)?;
-    blocking(move || ipp::cancel_job(addr, id)).await
+    blocking(move || {
+        if uses_ipp(addr) {
+            ipp::cancel_job(addr, id)
+        } else {
+            cups::cancel(id)
+        }
+    })
+    .await
 }
 
 #[tauri::command]
@@ -249,7 +342,18 @@ async fn print_file(
     fit: bool,
 ) -> Result<PrintResultDto, String> {
     let addr = parse_ip(&ip)?;
-    blocking(move || do_print(addr, Path::new(&path), copies, color, fit)).await
+    blocking(move || {
+        if uses_ipp(addr) {
+            do_print(addr, Path::new(&path), copies, color, fit)
+        } else {
+            if !cups::queue_ready_for(ip.trim()) {
+                return Err("najpierw kliknij „Skonfiguruj drukarkę” w karcie Drukarka".into());
+            }
+            let id = cups::print(Path::new(&path), copies, color, fit)?;
+            Ok(PrintResultDto { jobs: vec![id], note: String::new() })
+        }
+    })
+    .await
 }
 
 fn do_print(
@@ -348,7 +452,7 @@ fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
 /// Otwiera stronę wydania w przeglądarce (tylko adresy GitHuba).
 #[tauri::command]
 fn open_page(url: String) -> Result<(), String> {
-    if !url.starts_with("https://github.com/") {
+    if !(url.starts_with("https://github.com/") || url.starts_with("https://support.epson.net/")) {
         return Err("niedozwolony adres".into());
     }
     host_command("xdg-open")
@@ -376,6 +480,7 @@ fn main() {
             jobs,
             cancel,
             print_file,
+            setup_printer,
             app_version,
             check_update,
             install_update,

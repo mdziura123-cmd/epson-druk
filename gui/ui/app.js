@@ -111,6 +111,32 @@ function renderPrinter() {
   $('p-reasons').textContent = reasons.join(' · ');
   $('p-reasons').classList.toggle('hidden', !reasons.length);
 
+  // Tryb przez sterownik (np. L3150 bez IPP)
+  const setup = $('p-setup');
+  const needSetup = st.mode === 'cups' && !st.queue_ready;
+  setup.classList.toggle('hidden', !needSetup);
+  $('p-ip').textContent = st.ip + (st.mode === 'cups' ? ' · przez sterownik Epson' : '');
+  if (needSetup) {
+    const t = $('setup-text');
+    t.replaceChildren();
+    if (st.driver_missing) {
+      t.append(
+        el('b', '', 'Potrzebny sterownik Epson. '),
+        document.createTextNode('Ta drukarka nie drukuje bez sterownika. Pobierz pakiet RPM ze strony Epsona, zainstaluj poleceniem '),
+        el('code', '', 'rpm-ostree install ~/Pobrane/epson-inkjet-printer-escpr-*.rpm'),
+        document.createTextNode(', uruchom komputer ponownie i kliknij „Sprawdź ponownie”.'));
+      $('btn-setup').textContent = 'Sprawdź ponownie';
+      $('btn-driver-page').classList.remove('hidden');
+    } else {
+      t.append(
+        el('b', '', 'Prawie gotowe. '),
+        document.createTextNode('Kliknij przycisk, a aplikacja doda drukarkę do systemu (raz). System może poprosić o hasło.'));
+      $('btn-setup').textContent = 'Skonfiguruj drukarkę';
+      $('btn-driver-page').classList.add('hidden');
+    }
+    setPill(`${st.model.replace(/ Series$/, '')} – wymaga konfiguracji`, 'busy');
+  }
+
   // Czarno-biało tylko gdy drukarka nie umie koloru
   const colorBtn = document.querySelector('#color-seg [data-color="1"]');
   colorBtn.disabled = !st.color_supported;
@@ -163,9 +189,10 @@ async function scan() {
   box.classList.remove('hidden');
   box.replaceChildren(el('div', 'empty', 'Przeszukuję sieć – to potrwa kilka sekund…'));
   try {
-    const found = await invoke('scan');
+    const extra = state.ip || $('manual-ip').value.trim() || null;
+    const found = await invoke('scan', { extra });
     box.replaceChildren();
-    const printers = found.filter((f) => f.model);
+    const printers = found.filter((f) => f.model || f.raw);
     if (!printers.length) {
       box.appendChild(el('div', 'empty',
         'Nie znaleziono drukarki. Sprawdź, czy jest włączona i połączona z tą samą siecią Wi-Fi.'));
@@ -173,7 +200,9 @@ async function scan() {
     }
     for (const f of printers) {
       const b = el('button', 'scan-item');
-      b.append(el('span', '', f.model), el('span', 'ip', f.ip));
+      const name = el('span', '', f.model || 'Drukarka');
+      name.appendChild(el('span', 'mode-tag', f.ipp ? 'bez sterownika' : 'przez sterownik'));
+      b.append(name, el('span', 'ip', f.ip));
       b.onclick = async () => {
         box.classList.add('hidden');
         await connect(f.ip);
@@ -181,7 +210,7 @@ async function scan() {
       box.appendChild(b);
     }
     // Jedna drukarka Epson? Połącz od razu.
-    const epsons = printers.filter((f) => /epson/i.test(f.model));
+    const epsons = printers.filter((f) => /epson/i.test(f.model || ''));
     if (epsons.length === 1 && !state.ip) {
       box.classList.add('hidden');
       await connect(epsons[0].ip);
@@ -246,7 +275,8 @@ async function pickFiles() {
 
 function updatePrintButton() {
   const b = $('btn-print');
-  b.disabled = state.printing || !state.ip || !state.files.length;
+  const notReady = state.status && state.status.mode === 'cups' && !state.status.queue_ready;
+  b.disabled = state.printing || !state.ip || !state.files.length || notReady;
   b.textContent = state.printing ? 'Drukuję…'
     : state.files.length > 1 ? `Drukuj (${state.files.length})` : 'Drukuj';
 }
@@ -409,6 +439,28 @@ function bind() {
   };
   $('manual-ip').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-manual').click(); });
   $('btn-pick').onclick = pickFiles;
+  $('btn-driver-page').onclick = () =>
+    invoke('open_page', { url: 'https://support.epson.net/linux/Printer/LSB_less_distribution_pages/en/escpr.php' })
+      .catch((e) => toast(errText(e), 'bad'));
+  $('btn-setup').onclick = async () => {
+    const st = state.status;
+    if (!st) return;
+    if (st.driver_missing) { connect(st.ip); return; }
+    const b = $('btn-setup');
+    b.disabled = true;
+    b.textContent = 'Konfiguruję…';
+    try {
+      await invoke('setup_printer', { ip: st.ip, model: st.model });
+      toast('Drukarka dodana do systemu – możesz drukować', 'ok');
+      await connect(st.ip, { silent: true });
+    } catch (e) {
+      const msg = errText(e);
+      if (msg === 'BRAK_STEROWNIKA') { await connect(st.ip, { silent: true }); }
+      else toast(msg, 'bad');
+    } finally {
+      b.disabled = false;
+    }
+  };
   $('btn-print').onclick = printAll;
   $('btn-jobs').onclick = refreshJobs;
   $('btn-version').onclick = () => checkUpdate({ manual: true });

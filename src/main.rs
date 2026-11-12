@@ -18,10 +18,12 @@ fn cmd_szukaj() -> Result<(), String> {
         println!("Nie znaleziono drukarki. Sprawdź, czy jest włączona i w tej samej sieci Wi-Fi.");
     }
     for f in found {
-        match f.model {
-            Some(m) => println!("  ✔ {:<15}  {m}", f.ip),
-            None => println!("  ? {:<15}  (port 631 otwarty, brak odpowiedzi IPP)", f.ip),
-        }
+        let how = match (f.ipp, f.raw) {
+            (true, _) => "IPP – drukowanie bez sterownika",
+            (false, true) => "port 9100 – drukowanie przez sterownik (CUPS)",
+            _ => "",
+        };
+        println!("  ✔ {:<15}  {:<28} {how}", f.ip, f.model.unwrap_or_else(|| "nieznany model".into()));
     }
     Ok(())
 }
