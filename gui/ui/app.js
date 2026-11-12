@@ -314,8 +314,24 @@ const CHOICE_PL = {
   '5x7': '13×18 cm', '8x10': '20×25 cm', None: 'Brak', True: 'Tak', False: 'Nie',
   Auto: 'Automatycznie', Upper: 'Tylny podajnik', Rear: 'Tylny podajnik',
 };
+const QUALITY_PL = {
+  DRAFT: 'Szkic (szybko, mniej tuszu)', ECONOMY: 'Ekonomiczna', NORMAL: 'Standardowa', STANDARD: 'Standardowa',
+  HIGH: 'Wysoka', FINE: 'Wysoka', BEST: 'Najwyższa', SUPERFINE: 'Najwyższa', PHOTO: 'Fotograficzna', FAST: 'Szybka',
+};
+const QUALITY_ORDER = ['DRAFT', 'FAST', 'ECONOMY', 'NORMAL', 'STANDARD', 'HIGH', 'FINE', 'PHOTO', 'BEST', 'SUPERFINE'];
+function qualityLabel(q) { return QUALITY_PL[q.toUpperCase()] || q; }
+
+/** MediaType w sterowniku Epson łączy papier i jakość: PLAIN_NORMAL → [PLAIN, NORMAL] */
+function splitMedia(v) {
+  const i = v.lastIndexOf('_');
+  if (i <= 0) return null;
+  const q = v.slice(i + 1).toUpperCase();
+  return QUALITY_PL[q] ? [v.slice(0, i), v.slice(i + 1)] : null;
+}
+
 function choiceLabel(v) {
   if (CHOICE_PL[v]) return CHOICE_PL[v];
+  if (/^[-+]?\d+$/.test(v)) return v === '0' ? 'Standardowo (0)' : (v.startsWith('-') ? v : '+' + v.replace('+', ''));
   const borderless = /full ?bleed|borderless|\.fb$/i.test(v);
   const base = v.replace(/\.(fullbleed|borderless|fb)$/i, '').replace(/_?(full ?bleed|borderless)$/i, '');
   let text = CHOICE_PL[base] || CHOICE_PL[base.toUpperCase()] || base;
@@ -357,23 +373,68 @@ async function loadPrintOptions() {
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
     });
   state.printOpts = {};
+  const save = () => invoke('save_setting', { key: 'opcje-druku', value: JSON.stringify(state.printOpts) }).catch(() => {});
+  const makeSelect = (labelText, values, current, labelFn, onChange) => {
+    const lab = el('label', '', labelText);
+    const sel = el('select');
+    for (const v of values) {
+      const op = el('option', '', labelFn(v));
+      op.value = v;
+      if (v === current) op.selected = true;
+      sel.appendChild(op);
+    }
+    sel.onchange = () => onChange(sel.value, sel);
+    lab.appendChild(sel);
+    grid.appendChild(lab);
+    return sel;
+  };
+
   for (const o of opts) {
     const val = o.choices.includes(savedObj[o.key]) ? savedObj[o.key] : o.default;
     state.printOpts[o.key] = val;
-    const lab = el('label', '', OPT_LABELS[o.key] || o.label);
-    const sel = el('select');
-    for (const c of o.choices) {
-      const op = el('option', '', choiceLabel(c));
-      op.value = c;
-      if (c === val) op.selected = true;
-      sel.appendChild(op);
+
+    // Papier + jakość w jednej opcji (Epson ESC/P-R) → dwie listy
+    const split = o.key === 'MediaType' && o.choices.filter((c) => splitMedia(c)).length >= o.choices.length / 2;
+    if (split) {
+      const combos = {};          // papier → [jakości]
+      const order = [];
+      for (const c of o.choices) {
+        const s = splitMedia(c) || [c, ''];
+        if (!combos[s[0]]) { combos[s[0]] = []; order.push(s[0]); }
+        combos[s[0]].push(s[1]);
+      }
+      for (const p of order) {
+        combos[p].sort((x, y) => QUALITY_ORDER.indexOf(x.toUpperCase()) - QUALITY_ORDER.indexOf(y.toUpperCase()));
+      }
+      let [paper, quality] = splitMedia(val) || [val, ''];
+      const combine = () => (quality ? `${paper}_${quality}` : paper);
+      let qSel = null;
+      const fillQuality = () => {
+        const qs = combos[paper];
+        if (!qs.includes(quality)) quality = qs.find((q) => /^(NORMAL|STANDARD)$/i.test(q)) || qs[0];
+        qSel.replaceChildren();
+        for (const q of qs) {
+          const op = el('option', '', q ? qualityLabel(q) : 'Standardowa');
+          op.value = q;
+          if (q === quality) op.selected = true;
+          qSel.appendChild(op);
+        }
+        qSel.disabled = qs.length < 2;
+        state.printOpts.MediaType = combine();
+      };
+      makeSelect('Rodzaj papieru', order, paper, (p) => choiceLabel(p), (v) => {
+        paper = v; fillQuality(); save();
+      });
+      qSel = makeSelect('Jakość druku', [], '', (q) => q, (v) => {
+        quality = v; state.printOpts.MediaType = combine(); save();
+      });
+      fillQuality();
+      continue;
     }
-    sel.onchange = () => {
-      state.printOpts[o.key] = sel.value;
-      invoke('save_setting', { key: 'opcje-druku', value: JSON.stringify(state.printOpts) }).catch(() => {});
-    };
-    lab.appendChild(sel);
-    grid.appendChild(lab);
+
+    makeSelect(OPT_LABELS[o.key] || o.label, o.choices, val, choiceLabel, (v) => {
+      state.printOpts[o.key] = v; save();
+    });
   }
   $('adv').classList.toggle('hidden', !opts.length);
 }
@@ -402,7 +463,9 @@ function syncEditorControls() {
   document.querySelectorAll('#pe-fit button').forEach((b) =>
     b.classList.toggle('active', (b.dataset.fill === '1') === editParams.fill));
   const paper = choiceLabel(state.printOpts.PageSize || 'A4');
-  const media = state.printOpts.MediaType ? ' · ' + choiceLabel(state.printOpts.MediaType) : '';
+  const mt = state.printOpts.MediaType;
+  const sp = mt && splitMedia(mt);
+  const media = !mt ? '' : sp ? ` · ${choiceLabel(sp[0])} · ${qualityLabel(sp[1])}` : ' · ' + choiceLabel(mt);
   $('pe-paper').textContent = `Papier: ${paper}${media}${state.color ? '' : ' · czarno-białe'}`;
 }
 
