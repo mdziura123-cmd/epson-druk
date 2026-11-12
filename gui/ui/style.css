@@ -56,9 +56,14 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 /* Wersja i aktualizacje */
 .top-right { display: flex; gap: 10px; align-items: center; }
 .version-btn {
-  border: 1px solid var(--line); background: var(--card); color: var(--muted);
-  border-radius: 999px; padding: 6px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  border-radius: 999px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
 }
+.version-btn svg { width: 14px; height: 14px; }
+.version-btn .ver { color: var(--muted); }
+.version-btn.has-update .ver { color: var(--accent-text); opacity: .85; }
+.version-btn.checking svg { animation: spin 0.9s linear infinite; }
 .version-btn:hover { color: var(--accent); border-color: var(--accent); }
 .version-btn.has-update { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
 .update-bar {
@@ -148,6 +153,15 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .ink .name { font-size: 12px; color: var(--muted); text-align: center; }
 .ink .pct { font-weight: 700; font-variant-numeric: tabular-nums; }
 .ink-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+
+/* Konserwacja */
+.maint { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.maint-title { font-size: 12px; color: var(--muted); font-weight: 600; }
+.maint-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.maint-buttons .btn { display: inline-flex; align-items: center; gap: 6px; }
+.maint-buttons svg { width: 16px; height: 16px; }
+.maint-hint { font-size: 12px; }
+.inks { min-height: 70px; }
 
 /* Strefa upuszczania */
 .drop {

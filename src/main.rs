@@ -92,7 +92,9 @@ fn pomoc() {
          epson-druk szukaj               znajdź drukarki w sieci\n  \
          epson-druk status  <IP>         stan, tusz i obsługiwane formaty\n  \
          epson-druk drukuj  <IP> <plik>  wydrukuj plik\n  \
-         epson-druk zadania <IP>         pokaż kolejkę zadań"
+         epson-druk zadania <IP>         pokaż kolejkę zadań\n  \
+         epson-druk test-dysz <IP>       wydrukuj test dysz\n  \
+         epson-druk czyszczenie <IP>     wyczyść głowicę drukującą"
     );
 }
 
@@ -108,6 +110,16 @@ fn main() {
         Some("szukaj") => cmd_szukaj(),
         Some("status") => parse_ip(args.get(2)).and_then(cmd_status),
         Some("zadania") => parse_ip(args.get(2)).and_then(cmd_zadania),
+        Some("test-dysz") => parse_ip(args.get(2)).and_then(|ip| {
+            maintenance(ip, Maintenance::NozzleCheck)?;
+            println!("✔ Wysłano test dysz – drukarka wydrukuje wzór.");
+            Ok(())
+        }),
+        Some("czyszczenie") => parse_ip(args.get(2)).and_then(|ip| {
+            maintenance(ip, Maintenance::HeadClean)?;
+            println!("✔ Rozpoczęto czyszczenie głowicy (ok. 1–2 min, kontrolka zasilania miga).");
+            Ok(())
+        }),
         Some("drukuj") => parse_ip(args.get(2)).and_then(|ip| match args.get(3) {
             Some(p) => cmd_drukuj(ip, p),
             None => Err("podaj plik do wydruku".into()),

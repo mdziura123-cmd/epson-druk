@@ -655,6 +655,53 @@ pub fn cancel_job(ip: IpAddr, job_id: i32) -> Result<(), String> {
     }
 }
 
+// =====================================================================
+// Konserwacja (tryb zdalny Epson, port 9100)
+// =====================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Maintenance {
+    /// Drukuje wzór testu dysz.
+    NozzleCheck,
+    /// Czyszczenie głowicy drukującej (zużywa trochę tuszu).
+    HeadClean,
+}
+
+/// Bajty polecenia trybu zdalnego Epson (te same, których używa m.in. escputil z Gutenprint).
+pub fn maintenance_bytes(m: Maintenance) -> Vec<u8> {
+    let cmd: &[u8; 2] = match m {
+        Maintenance::NozzleCheck => b"NC",
+        Maintenance::HeadClean => b"CH",
+    };
+    let mut b = Vec::new();
+    // Wyjście z trybu pakietowego (IEEE 1284.4) i reset
+    b.extend_from_slice(b"\x00\x00\x00\x1b\x01@EJL 1284.4\n@EJL     \n");
+    b.extend_from_slice(b"\x1b@");
+    // Wejście w tryb zdalny
+    b.extend_from_slice(b"\x1b(R\x08\x00\x00REMOTE1");
+    // Polecenie: nazwa, długość argumentów (LE), argumenty (0,0 = wszystkie kolory)
+    b.extend_from_slice(cmd);
+    b.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]);
+    // Wyjście z trybu zdalnego i reset
+    b.extend_from_slice(b"\x1b\x00\x00\x00");
+    b.extend_from_slice(b"\x1b@");
+    b
+}
+
+/// Wysyła polecenie konserwacji bezpośrednio do drukarki (port 9100).
+pub fn maintenance(ip: IpAddr, m: Maintenance) -> Result<(), String> {
+    let addr = SocketAddr::new(ip, RAW_PORT);
+    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+        .map_err(|e| format!("nie mogę połączyć się z drukarką ({addr}): {e}"))?;
+    s.set_write_timeout(Some(Duration::from_secs(10))).ok();
+    s.write_all(&maintenance_bytes(m))
+        .map_err(|e| format!("nie udało się wysłać polecenia: {e}"))?;
+    s.flush().ok();
+    // Chwila, żeby drukarka odebrała dane przed zamknięciem połączenia
+    thread::sleep(Duration::from_millis(500));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -669,6 +716,14 @@ mod tests {
         assert_eq!(r.text("printer-uri"), "ipp://10.0.0.5:631/ipp/print");
         assert_eq!(r.get("requested-attributes").unwrap().len(), 3);
         assert!(matches!(r.get("copies").unwrap()[0], Val::Int(2)));
+    }
+
+    #[test]
+    fn konserwacja() {
+        let b = maintenance_bytes(Maintenance::HeadClean);
+        let pos = b.windows(7).position(|w| w == b"REMOTE1").unwrap();
+        assert_eq!(&b[pos + 7..pos + 13], b"CH\x02\x00\x00\x00");
+        assert!(b.ends_with(b"\x1b\x00\x00\x00\x1b@"));
     }
 
     #[test]

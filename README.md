@@ -22,7 +22,9 @@ Co potrafi:
 - liczba kopii, kolor / czarno-biało, dopasowanie do strony,
 - PDF-y zamienia na obrazy, gdy drukarka nie przyjmuje PDF (potrzebny `pdftoppm` lub `gs` w systemie),
 - PNG, WEBP, BMP i GIF zamienia na JPEG,
-- kolejka zadań z możliwością anulowania.
+- kolejka zadań z możliwością anulowania,
+- konserwacja: **test dysz** i **czyszczenie głowicy** jednym kliknięciem (karta „Tusz i konserwacja”),
+- przycisk **Aktualizacje** w prawym górnym rogu.
 
 **Aktualizacje:** aplikacja sama sprawdza po starcie, czy na GitHubie jest nowsza wersja. Jeśli tak, pokaże pasek „Dostępna nowa wersja” – klikasz **Zaktualizuj**, a potem **Uruchom ponownie**. Plik jest sprawdzany sumą SHA-256 przed podmianą. Ręcznie możesz sprawdzić, klikając numer wersji w prawym górnym rogu.
 

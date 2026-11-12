@@ -97,6 +97,7 @@ async function connect(ip, { silent = false } = {}) {
 
 function renderPrinter() {
   const st = state.status;
+  updateMaintButtons();
   $('printer-empty').classList.toggle('hidden', !!st);
   $('printer-info').classList.toggle('hidden', !st);
   if (!st) return;
@@ -363,12 +364,44 @@ async function refreshJobs() {
   }
 }
 
+// ---------------------------------------------------------------- konserwacja
+async function runMaintenance(action) {
+  if (!state.ip) return;
+  const isClean = action === 'clean';
+  const ok = await dialog.ask(
+    isClean
+      ? 'Czyszczenie głowicy zużywa trochę tuszu i trwa około 1–2 minut. W tym czasie nie wyłączaj drukarki.\n\nRozpocząć czyszczenie?'
+      : 'Drukarka wydrukuje wzór testu dysz na jednej kartce. Upewnij się, że jest włożony papier A4.\n\nWydrukować test?',
+    { title: isClean ? 'Czyszczenie głowicy' : 'Test dysz', kind: isClean ? 'warning' : 'info', okLabel: isClean ? 'Wyczyść' : 'Drukuj', cancelLabel: 'Anuluj' }
+  ).catch(() => false);
+  if (!ok) return;
+  const btn = $(isClean ? 'btn-clean' : 'btn-nozzle');
+  btn.disabled = true;
+  try {
+    await invoke('maintenance', { ip: state.ip, action });
+    toast(isClean
+      ? 'Czyszczenie rozpoczęte – poczekaj, aż kontrolka zasilania przestanie migać. Potem zrób test dysz.'
+      : 'Wysłano test dysz. Jeśli we wzorze są przerwy – uruchom czyszczenie głowicy.', 'ok');
+  } catch (e) {
+    toast(errText(e), 'bad');
+  } finally {
+    setTimeout(() => { btn.disabled = !state.ip; }, isClean ? 60000 : 5000);
+  }
+}
+
+function updateMaintButtons() {
+  const on = !!(state.ip && state.status);
+  $('btn-nozzle').disabled = !on;
+  $('btn-clean').disabled = !on;
+}
+
 // ---------------------------------------------------------------- aktualizacje
 let update = null;
 
 async function checkUpdate({ manual = false } = {}) {
   const btn = $('btn-version');
-  if (manual) btn.textContent = 'sprawdzam…';
+  btn.classList.add('checking');
+  if (manual) $('btn-version-text').textContent = 'Sprawdzam…';
   try {
     update = await invoke('check_update');
     if (update.available) {
@@ -376,7 +409,8 @@ async function checkUpdate({ manual = false } = {}) {
       $('upd-current').textContent = update.current;
       $('update-bar').classList.remove('hidden');
       btn.classList.add('has-update');
-      btn.title = `Dostępna wersja ${update.latest}`;
+      btn.title = `Dostępna wersja ${update.latest} – kliknij, aby zobaczyć`;
+      $('btn-version-text').textContent = 'Nowa wersja!';
       if (!update.can_install) {
         $('btn-upd-install').textContent = 'Pobierz ze strony';
         $('upd-sub').textContent = 'Ta kopia nie działa jako AppImage – pobierz nową wersję ręcznie.';
@@ -387,7 +421,9 @@ async function checkUpdate({ manual = false } = {}) {
   } catch (e) {
     if (manual) toast(errText(e), 'bad');
   } finally {
-    btn.replaceChildren(document.createTextNode('v'), el('span', '', update ? update.current : (await invoke('app_version'))));
+    btn.classList.remove('checking');
+    if (!(update && update.available)) $('btn-version-text').textContent = 'Aktualizacje';
+    if (update) $('app-version').textContent = update.current;
   }
 }
 
@@ -463,7 +499,16 @@ function bind() {
   };
   $('btn-print').onclick = printAll;
   $('btn-jobs').onclick = refreshJobs;
-  $('btn-version').onclick = () => checkUpdate({ manual: true });
+  $('btn-version').onclick = () => {
+    if (update && update.available) {
+      $('update-bar').classList.remove('hidden');
+      $('update-bar').scrollIntoView({ behavior: 'smooth' });
+    } else {
+      checkUpdate({ manual: true });
+    }
+  };
+  $('btn-nozzle').onclick = () => runMaintenance('nozzle');
+  $('btn-clean').onclick = () => runMaintenance('clean');
   $('btn-upd-install').onclick = installUpdate;
   $('btn-upd-close').onclick = () => { $('update-bar').classList.add('hidden'); $('update-notes').classList.add('hidden'); };
   $('btn-upd-notes').onclick = () => {

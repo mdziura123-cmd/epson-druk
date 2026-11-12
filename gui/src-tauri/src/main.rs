@@ -261,6 +261,17 @@ fn cups_status(ip: IpAddr, ip_str: String) -> Result<StatusDto, String> {
 }
 
 #[tauri::command]
+async fn maintenance(ip: String, action: String) -> Result<(), String> {
+    let addr = parse_ip(&ip)?;
+    let m = match action.as_str() {
+        "nozzle" => ipp::Maintenance::NozzleCheck,
+        "clean" => ipp::Maintenance::HeadClean,
+        _ => return Err("nieznana operacja".into()),
+    };
+    blocking(move || ipp::maintenance(addr, m)).await
+}
+
+#[tauri::command]
 async fn setup_printer(ip: String, model: String) -> Result<(), String> {
     parse_ip(&ip)?;
     blocking(move || cups::setup(ip.trim(), &model)).await
@@ -481,6 +492,7 @@ fn main() {
             cancel,
             print_file,
             setup_printer,
+            maintenance,
             app_version,
             check_update,
             install_update,
