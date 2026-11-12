@@ -12,6 +12,7 @@ const state = {
   files: [],        // { path, name, ext, state: '', cls: '' }
   color: true,
   printing: false,
+  printOpts: {},
 };
 
 // ---------------------------------------------------------------- pomocnicze
@@ -90,6 +91,7 @@ async function connect(ip, { silent = false } = {}) {
     renderInks();
     checkAlerts(st);
     refreshJobs();
+    loadPrintOptions();
     if (!driverInfo) checkDriver();
     if (!silent) toast(`Połączono z ${st.model}`, 'ok');
   } catch (e) {
@@ -151,45 +153,101 @@ function renderPrinter() {
   if (!st.color_supported) setColor(false);
 }
 
+// ---------------------------------------------------------------- tusz
+const DEFAULT_INKS = ['Black', 'Cyan', 'Magenta', 'Yellow'];
+let manualInks = null;   // { levels: {Black: 80, ...}, date: '2026-11-12' }
+let inkEditing = false;
+
+function inkList(st) {
+  if (st && st.inks.length) return st.inks;
+  return DEFAULT_INKS.map((name) => ({ name, level: null, color: null }));
+}
+
 function renderInks() {
   const box = $('inks');
   box.replaceChildren();
-  $('card-ink').querySelector('.ink-note')?.remove();
+  const card = $('card-ink');
+  card.querySelector('.ink-note')?.remove();
   const st = state.status;
-  if (!st || !st.inks.length) {
-    box.appendChild(el('div', 'empty',
-      st ? 'Drukarka nie podaje poziomu tuszu. W L3150 sprawdź go w okienkach zbiorników z przodu.'
-         : 'Połącz się z drukarką, aby zobaczyć tusz.'));
+  const manualBox = $('ink-manual');
+  if (!st) {
+    manualBox.classList.add('hidden');
+    box.appendChild(el('div', 'empty', 'Połącz się z drukarką, aby zobaczyć tusz.'));
     return;
   }
-  let unknown = false;
-  for (const ink of st.inks) {
+  const live = st.inks.some((i) => i.level !== null && i.level !== undefined);
+  const canManual = !live;
+  manualBox.classList.toggle('hidden', !canManual);
+  const useManual = canManual && (manualInks || inkEditing);
+
+  for (const ink of inkList(st)) {
     const wrap = el('div', 'ink');
     const tank = el('div', 'tank');
-    if (ink.level === null || ink.level === undefined) {
+    let level = ink.level;
+    if (useManual) {
+      level = manualInks && manualInks.levels[ink.name] !== undefined ? manualInks.levels[ink.name] : (inkEditing ? 100 : null);
+      tank.classList.add('manual');
+    }
+    if (level === null || level === undefined) {
       tank.classList.add('unknown');
       tank.textContent = '?';
-      unknown = true;
       wrap.append(tank, el('div', 'pct', '—'));
     } else {
       const fill = el('div', 'fill');
       fill.style.background = inkColor(ink);
-      fill.style.height = '0%';
+      fill.style.height = level + '%';
       tank.appendChild(fill);
-      requestAnimationFrame(() => { fill.style.height = ink.level + '%'; });
-      wrap.append(tank, el('div', 'pct', ink.level + '%'));
+      wrap.append(tank, el('div', 'pct', level + '%'));
+    }
+    if (inkEditing) {
+      tank.classList.add('editable');
+      const r = el('input');
+      r.type = 'range'; r.min = 0; r.max = 100; r.step = 5;
+      r.value = level ?? 100;
+      r.title = 'Ustaw tak, jak widzisz w okienku zbiornika';
+      r.oninput = () => {
+        manualInks = manualInks || { levels: {}, date: '' };
+        manualInks.levels[ink.name] = parseInt(r.value, 10);
+        const f = tank.querySelector('.fill');
+        if (f) { f.style.height = r.value + '%'; wrap.querySelector('.pct').textContent = r.value + '%'; }
+        else renderInks();
+      };
+      wrap.appendChild(r);
     }
     wrap.appendChild(el('div', 'name', inkName(ink.name)));
     box.appendChild(wrap);
   }
-  const card = $('card-ink');
-  card.querySelector('.ink-note')?.remove();
-  const note = unknown
-    ? '„?” – drukarka nie podaje poziomu tego tuszu. Sprawdź go w okienkach zbiorników.'
-    : st.ink_live && /L3\d{3}|EcoTank|ET-/i.test(st.model)
-      ? 'Poziom szacowany przez drukarkę. Po uzupełnieniu tuszu zresetuj licznik na drukarce, żeby wskazania były dokładne.'
-      : '';
+
+  let note = '';
+  if (live) {
+    note = st.ink_live && /L3\d{3}|EcoTank|ET-/i.test(st.model)
+      ? 'Poziom szacowany przez drukarkę.' : '';
+  } else if (inkEditing) {
+    note = 'Przesuń suwaki tak, jak wygląda tusz w okienkach zbiorników z przodu drukarki.';
+  } else if (manualInks) {
+    note = 'Poziomy ustawione ręcznie – ta drukarka nie mierzy tuszu sama. Zaktualizuj je po uzupełnieniu.';
+  } else {
+    note = st.ink_unmeasured
+      ? 'Ta drukarka nie mierzy tuszu (zgłasza zawsze 100%). Sprawdź okienka zbiorników lub ustaw poziomy ręcznie.'
+      : 'Drukarka nie podaje poziomu tuszu. Sprawdź okienka zbiorników lub ustaw poziomy ręcznie.';
+  }
   if (note) box.after(el('div', 'ink-note', note));
+  $('ink-manual-date').textContent = manualInks && manualInks.date && !inkEditing ? `ostatnio: ${manualInks.date}` : '';
+  $('btn-ink-edit').classList.toggle('hidden', inkEditing);
+  $('ink-edit-actions').classList.toggle('hidden', !inkEditing);
+  $('btn-ink-edit').textContent = manualInks ? 'Zmień poziomy' : 'Ustaw poziomy ręcznie';
+}
+
+async function saveManualInks() {
+  manualInks = manualInks || { levels: {}, date: '' };
+  for (const ink of inkList(state.status)) {
+    if (manualInks.levels[ink.name] === undefined) manualInks.levels[ink.name] = 100;
+  }
+  manualInks.date = new Date().toLocaleDateString('pl-PL');
+  inkEditing = false;
+  await invoke('save_setting', { key: 'tusz-reczny', value: JSON.stringify(manualInks) }).catch((e) => toast(errText(e), 'bad'));
+  renderInks();
+  toast('Zapisano poziomy tuszu', 'ok');
 }
 
 async function scan() {
@@ -234,6 +292,164 @@ async function scan() {
   }
 }
 
+// ---------------------------------------------------------------- ustawienia wydruku
+const OPT_LABELS = {
+  PageSize: 'Rozmiar papieru', MediaType: 'Rodzaj papieru', Quality: 'Jakość druku',
+  PrintQuality: 'Jakość druku', cupsPrintQuality: 'Jakość druku', escprQuality: 'Jakość druku',
+  OutputMode: 'Jakość druku', Resolution: 'Rozdzielczość', InputSlot: 'Podajnik', Duplex: 'Druk dwustronny',
+  Borderless: 'Bez marginesów', Brightness: 'Jasność', Contrast: 'Kontrast', Saturation: 'Nasycenie',
+};
+const OPT_ORDER = ['PageSize', 'MediaType', 'Quality', 'PrintQuality', 'cupsPrintQuality', 'escprQuality', 'OutputMode'];
+const OPT_HIDDEN = ['Ink', 'ColorModel', 'ColorMode', 'PageRegion'];
+const CHOICE_PL = {
+  PLAIN: 'Papier zwykły', PMPHOTO: 'Fotograficzny błyszczący Premium', PSPHOTO: 'Fotograficzny półbłyszczący Premium',
+  PMMATT: 'Matowy Premium', PHOTO: 'Fotograficzny błyszczący', GLOSSY: 'Błyszczący', PLATINA: 'Fotograficzny Ultra Premium',
+  MATTE: 'Matowy', ENV: 'Koperta', ENVELOPE: 'Koperta', BSMATT: 'Matowy dwustronny', PMLABEL: 'Etykiety',
+  GPHOTO: 'Fotograficzny błyszczący', PLAINHIGH: 'Zwykły – wysoka jakość', LETTERHEAD: 'Papier firmowy',
+  Draft: 'Szkic (szybko, mniej tuszu)', Economy: 'Ekonomiczna', Normal: 'Standardowa', Standard: 'Standardowa',
+  High: 'Wysoka', Fine: 'Wysoka', Best: 'Najwyższa', Photo: 'Fotograficzna', Super: 'Najwyższa',
+  A4: 'A4 (21×29,7 cm)', A5: 'A5 (14,8×21 cm)', A6: 'A6 (10,5×14,8 cm)', B5: 'B5', Letter: 'Letter (USA)',
+  Legal: 'Legal (USA)', Postcard: 'Pocztówka (10×14,8 cm)', Hagaki: 'Pocztówka (10×14,8 cm)',
+  KG: '10×15 cm', T4X6: '10×15 cm', '4x6': '10×15 cm', '4X6': '10×15 cm', L: '9×13 cm', '2L': '13×18 cm',
+  '5x7': '13×18 cm', '8x10': '20×25 cm', None: 'Brak', True: 'Tak', False: 'Nie',
+  Auto: 'Automatycznie', Upper: 'Tylny podajnik', Rear: 'Tylny podajnik',
+};
+function choiceLabel(v) {
+  if (CHOICE_PL[v]) return CHOICE_PL[v];
+  const borderless = /full ?bleed|borderless|\.fb$/i.test(v);
+  const base = v.replace(/\.(fullbleed|borderless|fb)$/i, '').replace(/_?(full ?bleed|borderless)$/i, '');
+  let text = CHOICE_PL[base] || CHOICE_PL[base.toUpperCase()] || base;
+  const m = /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)(in|mm)?$/i.exec(base);
+  if (!CHOICE_PL[base] && m) {
+    const inch = (m[3] || 'in').toLowerCase() === 'in';
+    const f = (x) => inch ? Math.round(parseFloat(x) * 2.54) : Math.round(parseFloat(x) / 10);
+    text = `${f(m[1])}×${f(m[2])} cm`;
+  }
+  return borderless ? `${text} – bez marginesów` : text;
+}
+
+/** Proporcje papieru (krótszy/dłuższy bok) dla edytora zdjęć. */
+function paperAspect() {
+  const v = (state.printOpts.PageSize || 'A4').replace(/\.(fullbleed|borderless|fb)$/i, '');
+  const MM = { A4: [210, 297], A5: [148, 210], A6: [105, 148], B5: [182, 257], LETTER: [216, 279],
+    LEGAL: [216, 356], POSTCARD: [100, 148], HAGAKI: [100, 148], KG: [102, 152], T4X6: [102, 152],
+    L: [89, 127], '2L': [127, 178] };
+  let d = MM[v.toUpperCase()];
+  const m = /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)/i.exec(v);
+  if (!d && m) d = [parseFloat(m[1]), parseFloat(m[2])];
+  if (!d) d = MM.A4;
+  return Math.min(d[0], d[1]) / Math.max(d[0], d[1]);
+}
+
+let driverOptions = [];
+async function loadPrintOptions() {
+  if (!state.ip) return;
+  try { driverOptions = await invoke('printer_options', { ip: state.ip }); } catch (_) { driverOptions = []; }
+  const saved = await invoke('load_setting', { key: 'opcje-druku' }).catch(() => null);
+  let savedObj = {};
+  try { savedObj = saved ? JSON.parse(saved) : {}; } catch (_) {}
+  const grid = $('adv-grid');
+  grid.replaceChildren();
+  const opts = driverOptions
+    .filter((o) => !OPT_HIDDEN.includes(o.key))
+    .sort((a, b) => {
+      const ia = OPT_ORDER.indexOf(a.key), ib = OPT_ORDER.indexOf(b.key);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+  state.printOpts = {};
+  for (const o of opts) {
+    const val = o.choices.includes(savedObj[o.key]) ? savedObj[o.key] : o.default;
+    state.printOpts[o.key] = val;
+    const lab = el('label', '', OPT_LABELS[o.key] || o.label);
+    const sel = el('select');
+    for (const c of o.choices) {
+      const op = el('option', '', choiceLabel(c));
+      op.value = c;
+      if (c === val) op.selected = true;
+      sel.appendChild(op);
+    }
+    sel.onchange = () => {
+      state.printOpts[o.key] = sel.value;
+      invoke('save_setting', { key: 'opcje-druku', value: JSON.stringify(state.printOpts) }).catch(() => {});
+    };
+    lab.appendChild(sel);
+    grid.appendChild(lab);
+  }
+  $('adv').classList.toggle('hidden', !opts.length);
+}
+
+// ---------------------------------------------------------------- edytor zdjęć
+const PHOTO_EXT = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'];
+const PHOTO_DEFAULT = { rotate: 0, brightness: 0, contrast: 0, saturation: 0, fill: false };
+let editing = null;     // plik
+let editParams = null;
+let previewTimer = null;
+let previewSeq = 0;
+
+function openEditor(f) {
+  editing = f;
+  editParams = { ...PHOTO_DEFAULT, ...(f.photo || {}) };
+  $('pe-name').textContent = '– ' + f.name;
+  syncEditorControls();
+  $('photo-modal').classList.remove('hidden');
+  schedulePreview(0);
+}
+
+function syncEditorControls() {
+  $('pe-b').value = editParams.brightness; $('pe-b-v').textContent = editParams.brightness;
+  $('pe-c').value = editParams.contrast; $('pe-c-v').textContent = editParams.contrast;
+  $('pe-s').value = editParams.saturation; $('pe-s-v').textContent = editParams.saturation;
+  document.querySelectorAll('#pe-fit button').forEach((b) =>
+    b.classList.toggle('active', (b.dataset.fill === '1') === editParams.fill));
+  const paper = choiceLabel(state.printOpts.PageSize || 'A4');
+  const media = state.printOpts.MediaType ? ' · ' + choiceLabel(state.printOpts.MediaType) : '';
+  $('pe-paper').textContent = `Papier: ${paper}${media}${state.color ? '' : ' · czarno-białe'}`;
+}
+
+function schedulePreview(delay = 140) {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(renderPreview, delay);
+}
+
+async function renderPreview() {
+  if (!editing) return;
+  const seq = ++previewSeq;
+  $('pe-loading').classList.remove('hidden');
+  try {
+    const url = await invoke('photo_preview', {
+      path: editing.path,
+      photo: { ...editParams, aspect: paperAspect(), color: state.color },
+    });
+    if (seq !== previewSeq) return;
+    const img = $('pe-img');
+    img.onload = () => {
+      const a = paperAspect();
+      const landscape = img.naturalWidth >= img.naturalHeight;
+      const page = $('pe-page');
+      page.style.aspectRatio = landscape ? `${1 / a}` : `${a}`;
+      page.style.width = landscape ? 'min(100%, 560px)' : 'auto';
+      page.style.height = landscape ? 'auto' : '440px';
+      page.classList.toggle('fill', editParams.fill);
+      page.classList.toggle('margin', !editParams.fill);
+    };
+    img.src = url;
+  } catch (e) {
+    toast(errText(e), 'bad');
+  } finally {
+    if (seq === previewSeq) $('pe-loading').classList.add('hidden');
+  }
+}
+
+function closeEditor(save) {
+  if (save && editing) {
+    const changed = Object.keys(PHOTO_DEFAULT).some((k) => editParams[k] !== PHOTO_DEFAULT[k]);
+    editing.photo = changed ? { ...editParams } : null;
+    renderFiles();
+  }
+  editing = null;
+  $('photo-modal').classList.add('hidden');
+}
+
 // ---------------------------------------------------------------- pliki
 const OK_EXT = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'txt', 'pwg', 'urf'];
 
@@ -259,8 +475,15 @@ function renderFiles() {
     rm.title = 'Usuń z listy';
     rm.disabled = state.printing;
     rm.onclick = () => { state.files.splice(i, 1); renderFiles(); };
-    li.append(el('span', 'tag', f.ext.toUpperCase()), el('span', 'fname', f.name),
-              el('span', 'state ' + f.cls, f.state), rm);
+    li.append(el('span', 'tag', f.ext.toUpperCase()), el('span', 'fname', f.name));
+    if (PHOTO_EXT.includes(f.ext)) {
+      const adj = el('button', 'btn secondary adj' + (f.photo ? ' done' : ''), f.photo ? 'Dostosowano ✓' : 'Dostosuj');
+      adj.title = 'Obrót, kadrowanie, jasność, kontrast, kolory';
+      adj.disabled = state.printing;
+      adj.onclick = () => openEditor(f);
+      li.appendChild(adj);
+    }
+    li.append(el('span', 'state ' + f.cls, f.state), rm);
     li.title = f.path;
     ul.appendChild(li);
   });
@@ -314,8 +537,11 @@ async function printAll() {
     f.cls = '';
     renderFiles();
     try {
+      const usePhoto = PHOTO_EXT.includes(f.ext) && (f.photo || !state.color);
       const r = await invoke('print_file', {
         ip: state.ip, path: f.path, copies: copies(), color: state.color, fit: $('fit').checked,
+        options: state.printOpts,
+        photo: usePhoto ? { ...PHOTO_DEFAULT, ...(f.photo || {}), aspect: paperAspect(), color: state.color } : null,
       });
       f.state = 'wysłano ✓';
       f.cls = 'ok';
@@ -343,6 +569,25 @@ async function printAll() {
 
 // ---------------------------------------------------------------- kolejka
 let jobsTimer = null;
+let jobsFast = false;
+
+async function jobAction(job, action) {
+  if (action === 'cancel') {
+    const ok = await dialog.ask(
+      job.active
+        ? `Przerwać drukowanie „${job.name || 'dokument'}”?\n\nDrukarka może jeszcze dokończyć kartkę, która jest w środku.`
+        : `Anulować zadanie „${job.name || 'dokument'}”?`,
+      { title: job.active ? 'Przerwij wydruk' : 'Anuluj zadanie', kind: 'warning', okLabel: job.active ? 'Przerwij' : 'Anuluj zadanie', cancelLabel: 'Wróć' }
+    ).catch(() => false);
+    if (!ok) return;
+  }
+  try {
+    await invoke('job_action', { ip: state.ip, id: job.id, action });
+    toast({ cancel: job.active ? 'Wydruk przerwany' : 'Zadanie anulowane', hold: 'Zadanie wstrzymane', release: 'Zadanie wznowione' }[action], 'ok');
+  } catch (e) { toast(errText(e), 'bad'); }
+  refreshJobs();
+}
+
 async function refreshJobs() {
   if (!state.ip) return;
   const btn = $('btn-jobs');
@@ -354,18 +599,49 @@ async function refreshJobs() {
     if (!list.length) ul.appendChild(el('li', 'empty', 'Kolejka jest pusta.'));
     for (const j of list) {
       const li = el('li', 'job');
-      const cancel = el('button', 'icon-btn', '×');
-      cancel.title = 'Anuluj zadanie';
-      cancel.onclick = async () => {
-        try {
-          await invoke('cancel', { ip: state.ip, id: j.id });
-          toast(`Anulowano zadanie #${j.id}`, 'ok');
-          refreshJobs();
-        } catch (e) { toast(errText(e), 'bad'); }
-      };
-      li.append(el('span', 'jid', '#' + j.id), el('span', 'jname', j.name || 'dokument'),
-                el('span', 'jstate ' + j.state.replace(/\s/g, '-'), j.state), cancel);
+      const main = el('div', 'job-main');
+      const top = el('div', 'job-top');
+      top.append(el('span', 'jid', '#' + j.id), el('span', 'jname', j.name || 'dokument'),
+                 el('span', 'jstate ' + j.state.replace(/\s/g, '-'), j.state));
+      if (j.progress !== null && j.progress !== undefined && (j.active || j.state === 'gotowe')) {
+        top.appendChild(el('span', 'jid', j.progress + '%'));
+      }
+      main.appendChild(top);
+      if (j.active || j.state === 'gotowe') {
+        const bar = el('div', 'job-bar' + (j.active && (j.progress === null || j.progress === undefined) ? ' indet' : ''));
+        const fill = el('div');
+        fill.style.width = (j.progress ?? 0) + '%';
+        if (j.state === 'gotowe') fill.style.background = 'var(--ok)';
+        bar.appendChild(fill);
+        main.appendChild(bar);
+      }
+      if (j.detail) main.appendChild(el('div', 'job-detail', j.detail));
+      const actions = el('div', 'job-actions');
+      if (j.can_hold) {
+        const b = el('button', 'btn secondary', 'Wstrzymaj');
+        b.title = 'Zatrzymaj to zadanie w kolejce – wydrukujesz je później';
+        b.onclick = () => jobAction(j, 'hold');
+        actions.appendChild(b);
+      }
+      if (j.can_release) {
+        const b = el('button', 'btn secondary', 'Wznów');
+        b.onclick = () => jobAction(j, 'release');
+        actions.appendChild(b);
+      }
+      if (j.state !== 'gotowe' && j.state !== 'anulowane' && j.state !== 'przerwane') {
+        const b = el('button', 'btn ' + (j.active ? 'danger' : 'secondary'), j.active ? 'Przerwij' : 'Anuluj');
+        b.onclick = () => jobAction(j, 'cancel');
+        actions.appendChild(b);
+      }
+      li.append(main, actions);
       ul.appendChild(li);
+    }
+    // Gdy coś się drukuje – odświeżamy co 2 s
+    const fast = list.some((j) => j.active || j.state === 'w kolejce');
+    if (fast !== jobsFast) {
+      jobsFast = fast;
+      clearInterval(jobsTimer);
+      jobsTimer = setInterval(refreshJobs, fast ? 2000 : 10000);
     }
   } catch (_) {
     /* drukarka może nie udostępniać kolejki – pomijamy */
@@ -605,6 +881,33 @@ function bind() {
     }
   };
   $('btn-nozzle').onclick = () => runMaintenance('nozzle');
+  // Tusz ręcznie
+  $('btn-ink-edit').onclick = () => { inkEditing = true; renderInks(); };
+  $('btn-ink-save').onclick = saveManualInks;
+  $('btn-ink-full').onclick = () => {
+    manualInks = { levels: {}, date: '' };
+    for (const ink of inkList(state.status)) manualInks.levels[ink.name] = 100;
+    saveManualInks();
+  };
+  // Edytor zdjęć
+  $('pe-close').onclick = () => closeEditor(false);
+  $('pe-ok').onclick = () => closeEditor(true);
+  $('pe-reset').onclick = () => { editParams = { ...PHOTO_DEFAULT }; syncEditorControls(); schedulePreview(0); };
+  $('pe-rot-l').onclick = () => { editParams.rotate = (editParams.rotate + 270) % 360; schedulePreview(0); };
+  $('pe-rot-r').onclick = () => { editParams.rotate = (editParams.rotate + 90) % 360; schedulePreview(0); };
+  for (const [id, key] of [['pe-b', 'brightness'], ['pe-c', 'contrast'], ['pe-s', 'saturation']]) {
+    $(id).oninput = () => {
+      editParams[key] = parseInt($(id).value, 10);
+      $(id + '-v').textContent = editParams[key];
+      schedulePreview();
+    };
+  }
+  document.querySelectorAll('#pe-fit button').forEach((b) => {
+    b.onclick = () => { editParams.fill = b.dataset.fill === '1'; syncEditorControls(); schedulePreview(0); };
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && editing) closeEditor(false);
+  });
   $('btn-driver-update').onclick = () =>
     invoke('open_page', { url: (driverInfo && driverInfo.page) || 'https://support.epson.net/linux/Printer/LSB_less_distribution_pages/en/escpr.php' })
       .catch((e) => toast(errText(e), 'bad'));
@@ -655,6 +958,10 @@ async function start() {
   bind();
   updatePrintButton();
   invoke('app_version').then((v) => { $('app-version').textContent = v; }).catch(() => {});
+  try {
+    const mi = await invoke('load_setting', { key: 'tusz-reczny' });
+    if (mi) manualInks = JSON.parse(mi);
+  } catch (_) {}
   setTimeout(() => checkUpdate(), 3000); // sprawdź aktualizacje chwilę po starcie
   setInterval(() => { checkUpdate(); checkDriver(); }, 6 * 60 * 60 * 1000); // i co 6 godzin
   const saved = await invoke('load_printer').catch(() => null);
@@ -665,10 +972,11 @@ async function start() {
   } else {
     scan();
   }
-  // Odświeżanie stanu i kolejki co 10 s
-  jobsTimer = setInterval(() => {
-    if (state.ip && !state.printing) {
-      refreshJobs();
+  // Kolejka: co 10 s (co 2 s, gdy coś się drukuje – patrz refreshJobs)
+  jobsTimer = setInterval(refreshJobs, 10000);
+  // Stan drukarki co 10 s
+  setInterval(() => {
+    if (state.ip && !state.printing && !inkEditing) {
       invoke('status', { ip: state.ip })
         .then((st) => { state.status = st; renderPrinter(); renderInks(); checkAlerts(st); })
         .catch(() => setPill('Brak połączenia', 'bad'));

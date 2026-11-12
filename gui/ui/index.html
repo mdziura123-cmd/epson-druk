@@ -96,6 +96,14 @@
     <section class="card" id="card-ink">
       <div class="card-head"><h2>Tusz i konserwacja</h2></div>
       <div id="inks" class="inks"><div class="empty">Połącz się z drukarką, aby zobaczyć tusz.</div></div>
+      <div class="ink-manual hidden" id="ink-manual">
+        <button class="link-btn" id="btn-ink-edit">Ustaw poziomy ręcznie</button>
+        <span class="muted" id="ink-manual-date"></span>
+        <div class="ink-edit-actions hidden" id="ink-edit-actions">
+          <button class="btn secondary" id="btn-ink-full">Uzupełniłem wszystkie (100%)</button>
+          <button class="btn primary" id="btn-ink-save">Zapisz</button>
+        </div>
+      </div>
 
       <div class="maint">
         <div class="maint-title">Konserwacja głowicy</div>
@@ -146,6 +154,11 @@
         <div class="opt grow"></div>
         <button class="btn primary big" id="btn-print" disabled>Drukuj</button>
       </div>
+
+      <div class="adv hidden" id="adv">
+        <div class="adv-title">Ustawienia wydruku</div>
+        <div class="adv-grid" id="adv-grid"></div>
+      </div>
     </section>
 
     <!-- Kolejka -->
@@ -159,6 +172,55 @@
       <ul class="jobs" id="jobs"><li class="empty">Kolejka jest pusta.</li></ul>
     </section>
   </main>
+
+  <div class="modal hidden" id="photo-modal" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>Dostosuj zdjęcie <span class="muted" id="pe-name"></span></h2>
+        <button class="icon-btn" id="pe-close" title="Zamknij">×</button>
+      </div>
+      <div class="pe-body">
+        <div class="pe-stage">
+          <div class="pe-page" id="pe-page"><img id="pe-img" alt="Podgląd zdjęcia" /></div>
+          <div class="pe-paper muted" id="pe-paper"></div>
+          <div class="pe-loading hidden" id="pe-loading">Przygotowuję podgląd…</div>
+        </div>
+        <div class="pe-controls">
+          <div class="pe-group">
+            <label>Obrót</label>
+            <div class="row">
+              <button class="btn secondary" id="pe-rot-l" title="Obróć w lewo">⟲ W lewo</button>
+              <button class="btn secondary" id="pe-rot-r" title="Obróć w prawo">⟳ W prawo</button>
+            </div>
+          </div>
+          <div class="pe-group">
+            <label>Ułożenie na papierze</label>
+            <div class="segmented" id="pe-fit">
+              <button data-fill="0" class="active">Całe zdjęcie</button>
+              <button data-fill="1">Wypełnij stronę</button>
+            </div>
+            <div class="muted small">„Wypełnij” przycina brzegi, żeby zdjęcie zajęło całą kartkę.</div>
+          </div>
+          <div class="pe-group">
+            <label>Jasność <span id="pe-b-v">0</span></label>
+            <input type="range" id="pe-b" min="-100" max="100" value="0" />
+          </div>
+          <div class="pe-group">
+            <label>Kontrast <span id="pe-c-v">0</span></label>
+            <input type="range" id="pe-c" min="-100" max="100" value="0" />
+          </div>
+          <div class="pe-group">
+            <label>Nasycenie kolorów <span id="pe-s-v">0</span></label>
+            <input type="range" id="pe-s" min="-100" max="100" value="0" />
+          </div>
+          <div class="pe-actions">
+            <button class="btn secondary" id="pe-reset">Przywróć oryginał</button>
+            <button class="btn primary" id="pe-ok">Gotowe</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="toasts" id="toasts"></div>
 

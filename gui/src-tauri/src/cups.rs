@@ -166,6 +166,46 @@ pub fn state() -> (String, String) {
     (state.into(), message)
 }
 
+/// Opcja sterownika (z `lpoptions -l`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DriverOption {
+    pub key: String,
+    pub label: String,
+    pub default: String,
+    pub choices: Vec<String>,
+}
+
+pub fn parse_options(out: &str) -> Vec<DriverOption> {
+    out.lines()
+        .filter_map(|line| {
+            let (head, vals) = line.split_once(':')?;
+            let mut hp = head.splitn(2, '/');
+            let key = hp.next()?.trim().to_string();
+            let label = hp.next().unwrap_or(&key).trim().to_string();
+            let mut default = String::new();
+            let choices: Vec<String> = vals
+                .split_whitespace()
+                .map(|v| {
+                    if let Some(d) = v.strip_prefix('*') {
+                        default = d.to_string();
+                        d.to_string()
+                    } else {
+                        v.to_string()
+                    }
+                })
+                .collect();
+            (!key.is_empty() && choices.len() > 1).then_some(DriverOption { key, label, default, choices })
+        })
+        .collect()
+}
+
+/// Wszystkie opcje sterownika kolejki.
+pub fn options() -> Vec<DriverOption> {
+    run("lpoptions", &["-p", QUEUE, "-l"])
+        .map(|o| parse_options(&o))
+        .unwrap_or_default()
+}
+
 /// Opcja koloru ze sterownika: (nazwa, wartość kolor, wartość czarno-biała).
 fn color_option() -> Option<(String, String, String)> {
     let out = run("lpoptions", &["-p", QUEUE, "-l"]).ok()?;
@@ -196,8 +236,22 @@ fn color_option() -> Option<(String, String, String)> {
 
 /// Drukuje plik przez CUPS. Zwraca numer zadania.
 pub fn print(path: &Path, copies: u32, color: bool, fit: bool) -> Result<i32, String> {
+    print_ex(path, None, copies, color, fit, &[])
+}
+
+/// Drukuje z dodatkowymi opcjami sterownika (np. MediaType=PMPHOTO).
+pub fn print_ex(
+    path: &Path,
+    title: Option<&str>,
+    copies: u32,
+    color: bool,
+    fit: bool,
+    extra: &[(String, String)],
+) -> Result<i32, String> {
     let file = path.to_str().ok_or("zła ścieżka pliku")?;
-    let title = path.file_name().and_then(|n| n.to_str()).unwrap_or("dokument").to_string();
+    let title = title
+        .map(String::from)
+        .unwrap_or_else(|| path.file_name().and_then(|n| n.to_str()).unwrap_or("dokument").to_string());
     let n = copies.clamp(1, 99).to_string();
     let mut args: Vec<String> = vec![
         "-d".into(), QUEUE.into(), "-n".into(), n, "-t".into(), title,
@@ -205,6 +259,15 @@ pub fn print(path: &Path, copies: u32, color: bool, fit: bool) -> Result<i32, St
     if fit {
         args.push("-o".into());
         args.push("fit-to-page".into());
+    }
+    let known: Vec<String> = options().into_iter().map(|o| o.key).collect();
+    for (k, v) in extra {
+        // tylko opcje, które sterownik naprawdę ma, i bez znaków specjalnych
+        let safe = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+        if known.iter().any(|o| o == k) && safe(k) && safe(v) {
+            args.push("-o".into());
+            args.push(format!("{k}={v}"));
+        }
     }
     if let Some((name, c, m)) = color_option() {
         args.push("-o".into());
@@ -222,6 +285,100 @@ pub fn print(path: &Path, copies: u32, color: bool, fit: bool) -> Result<i32, St
         .split_whitespace()
         .find_map(|w| w.strip_prefix(&format!("{QUEUE}-")).and_then(|n| n.parse().ok()))
         .unwrap_or(0))
+}
+
+/// Zadanie z postępem.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct JobInfo {
+    pub id: i32,
+    pub name: String,
+    /// "w kolejce", "wstrzymane", "drukuje", "gotowe"…
+    pub state: String,
+    /// 0–100 gdy znany.
+    pub progress: Option<u8>,
+    /// np. "strona 2 z 4"
+    pub detail: String,
+    pub can_hold: bool,
+    pub can_release: bool,
+    pub active: bool,
+}
+
+fn state_word(s: i32) -> &'static str {
+    match s {
+        3 => "w kolejce",
+        4 => "wstrzymane",
+        5 => "drukuje",
+        6 => "zatrzymane",
+        7 => "anulowane",
+        8 => "przerwane",
+        9 => "gotowe",
+        _ => "nieznany",
+    }
+}
+
+/// Zadania z postępem (przez IPP lokalnego CUPS-a); zapas: `lpq`.
+pub fn jobs_detailed() -> Vec<JobInfo> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    match epson_druk::cups_jobs(QUEUE, "all") {
+        Ok(list) => {
+            let mut out: Vec<JobInfo> = list
+                .into_iter()
+                .filter(|j| match j.state {
+                    3..=6 => true,
+                    // zakończone pokazujemy jeszcze przez 2 minuty
+                    9 => j.completed_at.map(|t| now - t < 120).unwrap_or(false),
+                    7 | 8 => j.completed_at.map(|t| now - t < 30).unwrap_or(false),
+                    _ => false,
+                })
+                .map(|j| {
+                    let progress = match (j.state, j.pages, j.pages_done) {
+                        (9, _, _) => Some(100),
+                        (5, Some(t), Some(d)) if t > 0 => Some(((d.min(t) * 100) / t) as u8),
+                        (5, _, _) => None,
+                        _ => Some(0),
+                    };
+                    let detail = match (j.state, j.pages, j.pages_done) {
+                        (5, Some(t), d) => format!("strona {} z {t}", (d.unwrap_or(0) + 1).min(t)),
+                        (5, None, _) => {
+                            if j.message.is_empty() { "wysyłanie do drukarki…".into() } else { j.message.clone() }
+                        }
+                        (_, Some(t), _) => format!("{t} str."),
+                        _ => String::new(),
+                    };
+                    JobInfo {
+                        id: j.id,
+                        name: j.name,
+                        state: state_word(j.state).into(),
+                        progress,
+                        detail,
+                        can_hold: j.state == 3,
+                        can_release: j.state == 4,
+                        active: j.state == 5,
+                    }
+                })
+                .collect();
+            out.sort_by_key(|j| (!j.active, j.id));
+            out
+        }
+        Err(_) => jobs()
+            .into_iter()
+            .map(|(id, name, state)| {
+                let active = state == "drukuje";
+                JobInfo { id, name, state: state.clone(), progress: None, detail: String::new(), can_hold: !active, can_release: false, active }
+            })
+            .collect(),
+    }
+}
+
+pub fn hold(id: i32) -> Result<(), String> {
+    run("lp", &["-i", &format!("{QUEUE}-{id}"), "-H", "hold"]).map(|_| ())
+}
+
+pub fn release(id: i32) -> Result<(), String> {
+    run("lp", &["-i", &format!("{QUEUE}-{id}"), "-H", "resume"]).map(|_| ())
 }
 
 /// Lista zadań: (numer, nazwa, stan).
@@ -257,6 +414,16 @@ pub fn cancel(id: i32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn opcje() {
+        let o = parse_options("PageSize/Paper Size: *A4 A5 T4X6\nMediaType/Media Type: *PLAIN PMPHOTO\nInk/Ink: COLOR *MONO\nX/One: *A");
+        assert_eq!(o.len(), 3);
+        assert_eq!(o[0].key, "PageSize");
+        assert_eq!(o[0].label, "Paper Size");
+        assert_eq!(o[0].default, "A4");
+        assert_eq!(o[2].default, "MONO");
+    }
+
     #[test]
     fn klucz_modelu() {
         assert_eq!(model_key("EPSON L3150 Series"), "L3150");

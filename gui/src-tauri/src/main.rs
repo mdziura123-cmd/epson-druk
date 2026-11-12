@@ -1,6 +1,7 @@
 //! Epson Druk – aplikacja z okienkiem (Tauri 2).
 
 mod cups;
+mod photo;
 mod updater;
 
 use epson_druk as ipp;
@@ -52,6 +53,8 @@ struct StatusDto {
     firmware: Option<String>,
     /// Czy poziomy tuszu pochodzą z drukarki (SNMP / IPP).
     ink_live: bool,
+    /// Drukarka odpowiada, ale nie mierzy tuszu (np. zawsze 100%).
+    ink_unmeasured: bool,
 }
 
 #[derive(Serialize)]
@@ -67,6 +70,18 @@ struct JobDto {
     id: i32,
     name: String,
     state: String,
+    progress: Option<u8>,
+    detail: String,
+    can_hold: bool,
+    can_release: bool,
+    active: bool,
+}
+
+impl JobDto {
+    fn simple(id: i32, name: String, state: String) -> Self {
+        let active = state == "drukuje";
+        JobDto { id, name, state, progress: None, detail: String::new(), can_hold: false, can_release: false, active }
+    }
 }
 
 #[derive(Serialize)]
@@ -259,7 +274,16 @@ fn firmware_cached(ip: IpAddr) -> Option<String> {
 /// Uzupełnia stan o dane z SNMP (tusz, brak papieru, zacięcie…).
 fn merge_snmp(ip: IpAddr, dto: &mut StatusDto) {
     let Some(dev) = ipp::snmp::device_state(ip) else { return };
-    if !dev.inks.is_empty() && (dto.inks.is_empty() || dto.inks.iter().all(|i| i.level.is_none())) {
+    // EcoTank bez czujników (np. L3150) zgłasza stale 100% – to nie jest prawdziwy pomiar.
+    let fake_full = !dev.inks.is_empty() && dev.inks.iter().all(|(_, p, _)| *p == 100);
+    if fake_full {
+        dto.ink_unmeasured = true;
+        dto.inks = dev
+            .inks
+            .iter()
+            .map(|(name, _, color)| InkDto { name: name.clone(), level: None, color: Some(color.clone()) })
+            .collect();
+    } else if !dev.inks.is_empty() && (dto.inks.is_empty() || dto.inks.iter().all(|i| i.level.is_none())) {
         dto.inks = dev
             .inks
             .into_iter()
@@ -309,6 +333,7 @@ fn cups_status(ip: IpAddr, ip_str: String) -> Result<StatusDto, String> {
         driver_missing,
         firmware: None,
         ink_live: false,
+        ink_unmeasured: false,
     })
 }
 
@@ -377,6 +402,7 @@ async fn status_inner(ip: String) -> Result<StatusDto, String> {
         driver_missing: false,
         firmware: None,
         ink_live: false,
+        ink_unmeasured: false,
     })
 }
 
@@ -387,12 +413,21 @@ async fn jobs(ip: String) -> Result<Vec<JobDto>, String> {
         if uses_ipp(addr) {
             Ok(ipp::jobs(addr)?
                 .into_iter()
-                .map(|j| JobDto { id: j.id, name: j.name, state: j.state })
+                .map(|j| JobDto::simple(j.id, j.name, j.state))
                 .collect())
         } else {
-            Ok(cups::jobs()
+            Ok(cups::jobs_detailed()
                 .into_iter()
-                .map(|(id, name, state)| JobDto { id, name, state })
+                .map(|j| JobDto {
+                    id: j.id,
+                    name: j.name,
+                    state: j.state,
+                    progress: j.progress,
+                    detail: j.detail,
+                    can_hold: j.can_hold,
+                    can_release: j.can_release,
+                    active: j.active,
+                })
                 .collect())
         }
     })
@@ -419,20 +454,106 @@ async fn print_file(
     copies: u32,
     color: bool,
     fit: bool,
+    options: Option<std::collections::HashMap<String, String>>,
+    photo: Option<photo::PhotoParams>,
 ) -> Result<PrintResultDto, String> {
     let addr = parse_ip(&ip)?;
     blocking(move || {
-        if uses_ipp(addr) {
-            do_print(addr, Path::new(&path), copies, color, fit)
-        } else {
-            if !cups::queue_ready_for(ip.trim()) {
-                return Err("najpierw kliknij „Skonfiguruj drukarkę” w karcie Drukarka".into());
+        let src = PathBuf::from(&path);
+        let name = src.file_name().and_then(|n| n.to_str()).unwrap_or("dokument").to_string();
+        // Zdjęcie z ustawieniami → gotowy JPEG w katalogu tymczasowym
+        let mut tmp_dir: Option<PathBuf> = None;
+        let mut file = src.clone();
+        if let Some(p) = photo.as_ref().filter(|_| photo::is_photo(&src)) {
+            let mut p = p.clone();
+            p.color = p.color && color;
+            let jpg = photo::render_for_print(&src, &p)?;
+            let dir = temp_dir()?;
+            let out = dir.join("zdjecie.jpg");
+            fs::write(&out, jpg).map_err(|e| format!("nie mogę zapisać zdjęcia: {e}"))?;
+            file = out;
+            tmp_dir = Some(dir);
+        }
+        let result = if uses_ipp(addr) {
+            if tmp_dir.is_some() {
+                let data = fs::read(&file).map_err(|e| e.to_string())?;
+                let opts = ipp::PrintOptions { copies: copies.max(1), color, fit };
+                ipp::print(addr, &data, "image/jpeg", &name, &opts)
+                    .map(|id| PrintResultDto { jobs: vec![id], note: String::new() })
+            } else {
+                do_print(addr, &file, copies, color, fit)
             }
-            let id = cups::print(Path::new(&path), copies, color, fit)?;
-            Ok(PrintResultDto { jobs: vec![id], note: String::new() })
+        } else if !cups::queue_ready_for(ip.trim()) {
+            Err("najpierw kliknij „Skonfiguruj drukarkę” w karcie Drukarka".into())
+        } else {
+            let extra: Vec<(String, String)> = options.unwrap_or_default().into_iter().collect();
+            cups::print_ex(&file, Some(&name), copies, color, fit, &extra)
+                .map(|id| PrintResultDto { jobs: vec![id], note: String::new() })
+        };
+        if let Some(d) = tmp_dir {
+            let _ = fs::remove_dir_all(d);
+        }
+        result
+    })
+    .await
+}
+
+#[tauri::command]
+async fn photo_preview(path: String, photo: photo::PhotoParams) -> Result<String, String> {
+    blocking(move || photo::preview(Path::new(&path), &photo)).await
+}
+
+#[tauri::command]
+async fn printer_options(ip: String) -> Result<Vec<cups::DriverOption>, String> {
+    let addr = parse_ip(&ip)?;
+    blocking(move || {
+        if uses_ipp(addr) || !cups::queue_ready_for(ip.trim()) {
+            Ok(Vec::new())
+        } else {
+            Ok(cups::options())
         }
     })
     .await
+}
+
+#[tauri::command]
+async fn job_action(ip: String, id: i32, action: String) -> Result<(), String> {
+    let addr = parse_ip(&ip)?;
+    blocking(move || {
+        if uses_ipp(addr) {
+            return match action.as_str() {
+                "cancel" => ipp::cancel_job(addr, id),
+                _ => Err("ta drukarka pozwala tylko anulować zadania".into()),
+            };
+        }
+        match action.as_str() {
+            "hold" => cups::hold(id),
+            "release" => cups::release(id),
+            "cancel" => cups::cancel(id),
+            _ => Err("nieznana operacja".into()),
+        }
+    })
+    .await
+}
+
+fn setting_file(app: &tauri::AppHandle, key: &str) -> Result<PathBuf, String> {
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("zła nazwa ustawienia".into());
+    }
+    Ok(config_file(app)?.with_file_name(format!("{key}.json")))
+}
+
+#[tauri::command]
+fn load_setting(app: tauri::AppHandle, key: String) -> Option<String> {
+    fs::read_to_string(setting_file(&app, &key).ok()?).ok()
+}
+
+#[tauri::command]
+fn save_setting(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
+    if value.len() > 64 * 1024 {
+        return Err("za duże ustawienie".into());
+    }
+    fs::write(setting_file(&app, &key)?, value).map_err(|e| format!("nie mogę zapisać ustawień: {e}"))
 }
 
 fn do_print(
@@ -592,6 +713,11 @@ fn main() {
             setup_printer,
             maintenance,
             driver_info,
+            photo_preview,
+            printer_options,
+            job_action,
+            load_setting,
+            save_setting,
             app_version,
             check_update,
             install_update,

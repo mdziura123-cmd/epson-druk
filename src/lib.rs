@@ -271,18 +271,27 @@ impl IppResponse {
 // =====================================================================
 
 fn ipp_send(ip: IpAddr, body: &[u8], timeout: Duration) -> Result<IppResponse, String> {
-    let addr = SocketAddr::new(ip, IPP_PORT);
+    let host = match ip {
+        IpAddr::V6(v6) => format!("[{v6}]:{IPP_PORT}"),
+        IpAddr::V4(v4) => format!("{v4}:{IPP_PORT}"),
+    };
+    ipp_send_to(SocketAddr::new(ip, IPP_PORT), &host, IPP_PATH, body, timeout)
+}
+
+fn ipp_send_to(
+    addr: SocketAddr,
+    host: &str,
+    path: &str,
+    body: &[u8],
+    timeout: Duration,
+) -> Result<IppResponse, String> {
     let mut s = TcpStream::connect_timeout(&addr, timeout)
         .map_err(|e| format!("nie mogę połączyć się z {addr}: {e}"))?;
     s.set_read_timeout(Some(Duration::from_secs(60))).ok();
     s.set_write_timeout(Some(Duration::from_secs(60))).ok();
 
-    let host = match ip {
-        IpAddr::V6(v6) => format!("[{v6}]"),
-        IpAddr::V4(v4) => v4.to_string(),
-    };
     let head = format!(
-        "POST {IPP_PATH} HTTP/1.1\r\nHost: {host}:{IPP_PORT}\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\n\
          Content-Type: application/ipp\r\nContent-Length: {}\r\n\
          Connection: close\r\n\r\n",
         body.len()
@@ -702,6 +711,100 @@ pub fn maintenance(ip: IpAddr, m: Maintenance) -> Result<(), String> {
     // Chwila, żeby drukarka odebrała dane przed zamknięciem połączenia
     thread::sleep(Duration::from_millis(500));
     Ok(())
+}
+
+// =====================================================================
+// Lokalny CUPS – zadania z postępem (odczyt przez IPP na localhost:631)
+// =====================================================================
+
+#[derive(Debug, Clone)]
+pub struct CupsJob {
+    pub id: i32,
+    pub name: String,
+    /// 3 w kolejce, 4 wstrzymane, 5 drukuje, 6 zatrzymane, 7 anulowane, 8 przerwane, 9 gotowe
+    pub state: i32,
+    /// Liczba stron (jeśli znana).
+    pub pages: Option<i32>,
+    /// Strony już przetworzone.
+    pub pages_done: Option<i32>,
+    pub message: String,
+    /// Czas zakończenia (Unix), dla zadań zakończonych.
+    pub completed_at: Option<i64>,
+}
+
+pub fn cups_jobs(queue: &str, which: &str) -> Result<Vec<CupsJob>, String> {
+    let uri = format!("ipp://localhost/printers/{queue}");
+    let mut req = IppRequest::new(OP_GET_JOBS, &uri);
+    req.attr(TAG_KEYWORD, "which-jobs", which);
+    req.int("limit", 20);
+    req.keywords(
+        "requested-attributes",
+        &[
+            "job-id",
+            "job-name",
+            "job-state",
+            "job-impressions",
+            "job-impressions-completed",
+            "job-media-sheets",
+            "job-media-sheets-completed",
+            "job-printer-state-message",
+            "time-at-completed",
+        ],
+    );
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), IPP_PORT);
+    let r = ipp_send_to(addr, "localhost:631", &format!("/printers/{queue}"), &req.finish(), Duration::from_secs(2))?;
+    if !r.ok() {
+        return Err(format!("CUPS zwrócił błąd 0x{:04x}", r.status));
+    }
+    let mut out = Vec::new();
+    let mut cur: Option<CupsJob> = None;
+    let int = |v: &Vec<Val>| match v.first() {
+        Some(Val::Int(i)) => Some(*i),
+        _ => None,
+    };
+    for (group, name, vals) in &r.attrs {
+        if *group != TAG_JOB {
+            continue;
+        }
+        if name == "job-id" {
+            if let Some(j) = cur.take() {
+                out.push(j);
+            }
+            cur = Some(CupsJob {
+                id: int(vals).unwrap_or(0),
+                name: String::new(),
+                state: 0,
+                pages: None,
+                pages_done: None,
+                message: String::new(),
+                completed_at: None,
+            });
+            continue;
+        }
+        let Some(j) = cur.as_mut() else { continue };
+        match name.as_str() {
+            "job-name" => j.name = vals.first().map(|v| v.to_string()).unwrap_or_default(),
+            "job-state" => j.state = int(vals).unwrap_or(0),
+            "job-impressions" | "job-media-sheets" => {
+                if j.pages.is_none() {
+                    j.pages = int(vals).filter(|v| *v > 0);
+                }
+            }
+            "job-impressions-completed" | "job-media-sheets-completed" => {
+                let v = int(vals);
+                if v > j.pages_done {
+                    j.pages_done = v;
+                }
+            }
+            "job-printer-state-message" => j.message = vals.first().map(|v| v.to_string()).unwrap_or_default(),
+            "time-at-completed" => j.completed_at = int(vals).map(|v| v as i64).filter(|v| *v > 0),
+            _ => {}
+        }
+    }
+    if let Some(j) = cur {
+        out.push(j);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
