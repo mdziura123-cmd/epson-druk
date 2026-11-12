@@ -51,6 +51,21 @@ jobs:
           node-version: 20
       - name: Tauri CLI
         run: npm install -g @tauri-apps/cli@^2
+      - name: Wersja z tagu wydania
+        if: github.event_name == 'release'
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          V="${V#V}"
+          if [[ "$V" =~ ^[0-9]+$ ]]; then V="$V.0.0"; fi
+          if [[ "$V" =~ ^[0-9]+\.[0-9]+$ ]]; then V="$V.0"; fi
+          if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag wydania musi wyglądać jak v1.2.3 (jest: $GITHUB_REF_NAME)"; exit 1
+          fi
+          echo "Wersja: $V"
+          sed -i "0,/^version = .*/s//version = \"$V\"/" gui/src-tauri/Cargo.toml
+          jq --arg v "$V" '.version = $v' gui/src-tauri/tauri.conf.json > /tmp/conf.json
+          mv /tmp/conf.json gui/src-tauri/tauri.conf.json
+          grep -m1 '^version' gui/src-tauri/Cargo.toml; jq .version gui/src-tauri/tauri.conf.json
       - name: Budowanie AppImage
         working-directory: gui
         run: tauri build --bundles appimage
@@ -59,11 +74,14 @@ jobs:
           f=$(ls gui/src-tauri/target/release/bundle/appimage/*.AppImage | head -n1)
           cp "$f" Epson-Druk-x86_64.AppImage
           chmod +x Epson-Druk-x86_64.AppImage
-          ls -la Epson-Druk-x86_64.AppImage
+          sha256sum Epson-Druk-x86_64.AppImage > Epson-Druk-x86_64.AppImage.sha256
+          ls -la Epson-Druk-x86_64.AppImage*
       - uses: actions/upload-artifact@v4
         with:
           name: appimage
-          path: Epson-Druk-x86_64.AppImage
+          path: |
+            Epson-Druk-x86_64.AppImage
+            Epson-Druk-x86_64.AppImage.sha256
 
   release:
     name: Publikacja w Releases
@@ -78,4 +96,5 @@ jobs:
         with:
           files: |
             Epson-Druk-x86_64.AppImage
+            Epson-Druk-x86_64.AppImage.sha256
             epson-druk-linux-x86_64.tar.gz

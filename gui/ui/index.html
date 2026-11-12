@@ -12,11 +12,27 @@
       <svg viewBox="0 0 24 24" class="logo" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v7H6z"/></svg>
       <span>Epson Druk</span>
     </div>
-    <div class="printer-pill" id="pill">
-      <span class="dot" id="pill-dot"></span>
-      <span id="pill-text">Brak drukarki</span>
+    <div class="top-right">
+      <div class="printer-pill" id="pill">
+        <span class="dot" id="pill-dot"></span>
+        <span id="pill-text">Brak drukarki</span>
+      </div>
+      <button class="version-btn" id="btn-version" title="Sprawdź aktualizacje">v<span id="app-version">…</span></button>
     </div>
   </header>
+
+  <div class="update-bar hidden" id="update-bar">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>
+    <div class="update-text">
+      <b>Dostępna nowa wersja <span id="upd-version"></span></b>
+      <span class="muted" id="upd-sub">Masz wersję <span id="upd-current"></span></span>
+      <div class="progress hidden" id="upd-progress"><div id="upd-progress-fill"></div></div>
+    </div>
+    <button class="btn secondary" id="btn-upd-notes">Co nowego</button>
+    <button class="btn primary" id="btn-upd-install">Zaktualizuj</button>
+    <button class="icon-btn" id="btn-upd-close" title="Później">×</button>
+  </div>
+  <div class="update-notes hidden" id="update-notes"></div>
 
   <main class="grid">
     <!-- Drukarka -->

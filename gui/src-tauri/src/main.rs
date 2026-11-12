@@ -1,5 +1,7 @@
 //! Epson Druk – aplikacja z okienkiem (Tauri 2).
 
+mod updater;
+
 use epson_druk as ipp;
 use serde::Serialize;
 use std::fs;
@@ -318,6 +320,45 @@ fn do_print(
 }
 
 // ---------------------------------------------------------------------
+// Aktualizacje
+// ---------------------------------------------------------------------
+
+#[tauri::command]
+fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<updater::UpdateInfo, String> {
+    let current = app.package_info().version.to_string();
+    blocking(move || updater::check(&current)).await
+}
+
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
+    let current = app.package_info().version.to_string();
+    blocking(move || updater::install(&app, &current)).await
+}
+
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+    updater::restart(&app)
+}
+
+/// Otwiera stronę wydania w przeglądarce (tylko adresy GitHuba).
+#[tauri::command]
+fn open_page(url: String) -> Result<(), String> {
+    if !url.starts_with("https://github.com/") {
+        return Err("niedozwolony adres".into());
+    }
+    host_command("xdg-open")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("nie mogę otworzyć przeglądarki: {e}"))
+}
+
+// ---------------------------------------------------------------------
 
 fn main() {
     // Na kartach NVIDIA WebKitGTK potrafi pokazać puste okno – to temu zapobiega.
@@ -334,7 +375,12 @@ fn main() {
             status,
             jobs,
             cancel,
-            print_file
+            print_file,
+            app_version,
+            check_update,
+            install_update,
+            restart_app,
+            open_page
         ])
         .run(tauri::generate_context!())
         .expect("nie udało się uruchomić aplikacji");

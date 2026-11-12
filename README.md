@@ -24,6 +24,8 @@ Co potrafi:
 - PNG, WEBP, BMP i GIF zamienia na JPEG,
 - kolejka zadań z możliwością anulowania.
 
+**Aktualizacje:** aplikacja sama sprawdza po starcie, czy na GitHubie jest nowsza wersja. Jeśli tak, pokaże pasek „Dostępna nowa wersja” – klikasz **Zaktualizuj**, a potem **Uruchom ponownie**. Plik jest sprawdzany sumą SHA-256 przed podmianą. Ręcznie możesz sprawdzić, klikając numer wersji w prawym górnym rogu.
+
 Jeśli okno jest puste (zdarza się na kartach NVIDIA), aplikacja już ustawia `WEBKIT_DISABLE_DMABUF_RENDERER=1`; zgłoś problem w Issues.
 
 ## Wersja terminalowa (gotowy pakiet)

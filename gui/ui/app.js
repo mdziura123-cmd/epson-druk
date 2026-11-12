@@ -2,6 +2,7 @@
 const { invoke } = window.__TAURI__.core;
 const dialog = window.__TAURI__.dialog;
 const webview = window.__TAURI__.webview;
+const events = window.__TAURI__.event;
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -332,6 +333,72 @@ async function refreshJobs() {
   }
 }
 
+// ---------------------------------------------------------------- aktualizacje
+let update = null;
+
+async function checkUpdate({ manual = false } = {}) {
+  const btn = $('btn-version');
+  if (manual) btn.textContent = 'sprawdzam…';
+  try {
+    update = await invoke('check_update');
+    if (update.available) {
+      $('upd-version').textContent = update.latest;
+      $('upd-current').textContent = update.current;
+      $('update-bar').classList.remove('hidden');
+      btn.classList.add('has-update');
+      btn.title = `Dostępna wersja ${update.latest}`;
+      if (!update.can_install) {
+        $('btn-upd-install').textContent = 'Pobierz ze strony';
+        $('upd-sub').textContent = 'Ta kopia nie działa jako AppImage – pobierz nową wersję ręcznie.';
+      }
+    } else if (manual) {
+      toast(`Masz najnowszą wersję (${update.current})`, 'ok');
+    }
+  } catch (e) {
+    if (manual) toast(errText(e), 'bad');
+  } finally {
+    btn.replaceChildren(document.createTextNode('v'), el('span', '', update ? update.current : (await invoke('app_version'))));
+  }
+}
+
+async function installUpdate() {
+  if (!update) return;
+  if (!update.can_install) {
+    invoke('open_page', { url: update.page }).catch((e) => toast(errText(e), 'bad'));
+    return;
+  }
+  const b = $('btn-upd-install');
+  if (b.dataset.ready === '1') {
+    try { await invoke('restart_app'); } catch (e) { toast(errText(e), 'bad'); }
+    return;
+  }
+  b.disabled = true;
+  b.textContent = 'Pobieram…';
+  $('btn-upd-close').disabled = true;
+  $('upd-progress').classList.remove('hidden');
+  $('upd-sub').textContent = 'Pobieranie aktualizacji…';
+  const unlisten = await events.listen('update-progress', (e) => {
+    $('upd-progress-fill').style.width = e.payload + '%';
+    $('upd-sub').textContent = `Pobieranie aktualizacji… ${e.payload}%`;
+  });
+  try {
+    const v = await invoke('install_update');
+    $('upd-progress-fill').style.width = '100%';
+    $('upd-sub').textContent = `Wersja ${v} zainstalowana. Uruchom aplikację ponownie, aby z niej korzystać.`;
+    b.textContent = 'Uruchom ponownie';
+    b.dataset.ready = '1';
+    b.disabled = false;
+  } catch (e) {
+    $('upd-sub').textContent = 'Aktualizacja nie powiodła się – możesz spróbować ponownie.';
+    b.textContent = 'Spróbuj ponownie';
+    b.disabled = false;
+    $('btn-upd-close').disabled = false;
+    toast(errText(e), 'bad');
+  } finally {
+    unlisten();
+  }
+}
+
 // ---------------------------------------------------------------- start
 function bind() {
   $('btn-scan').onclick = scan;
@@ -344,6 +411,14 @@ function bind() {
   $('btn-pick').onclick = pickFiles;
   $('btn-print').onclick = printAll;
   $('btn-jobs').onclick = refreshJobs;
+  $('btn-version').onclick = () => checkUpdate({ manual: true });
+  $('btn-upd-install').onclick = installUpdate;
+  $('btn-upd-close').onclick = () => { $('update-bar').classList.add('hidden'); $('update-notes').classList.add('hidden'); };
+  $('btn-upd-notes').onclick = () => {
+    const n = $('update-notes');
+    n.textContent = (update && update.notes.trim()) || 'Brak opisu zmian dla tej wersji.';
+    n.classList.toggle('hidden');
+  };
   $('copies-minus').onclick = () => { $('copies').value = Math.max(1, copies() - 1); };
   $('copies-plus').onclick = () => { $('copies').value = Math.min(99, copies() + 1); };
   $('copies').onchange = () => { $('copies').value = copies(); };
@@ -378,6 +453,8 @@ function bind() {
 async function start() {
   bind();
   updatePrintButton();
+  invoke('app_version').then((v) => { $('app-version').textContent = v; }).catch(() => {});
+  setTimeout(() => checkUpdate(), 3000); // sprawdź aktualizacje chwilę po starcie
   const saved = await invoke('load_printer').catch(() => null);
   if (saved) {
     $('manual-ip').value = saved;
