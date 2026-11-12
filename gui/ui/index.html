@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Epson Druk</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" class="logo" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v7H6z"/></svg>
+      <span>Epson Druk</span>
+    </div>
+    <div class="printer-pill" id="pill">
+      <span class="dot" id="pill-dot"></span>
+      <span id="pill-text">Brak drukarki</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <!-- Drukarka -->
+    <section class="card" id="card-printer">
+      <div class="card-head">
+        <h2>Drukarka</h2>
+        <div class="actions">
+          <button class="icon-btn" id="btn-refresh" title="Odśwież stan">
+            <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg>
+          </button>
+          <button class="btn secondary" id="btn-scan">Szukaj w sieci</button>
+        </div>
+      </div>
+
+      <div id="printer-info" class="printer-info hidden">
+        <div class="model" id="p-model">—</div>
+        <div class="meta"><span id="p-ip">—</span> · <span id="p-state">—</span></div>
+        <div class="warn hidden" id="p-reasons"></div>
+      </div>
+
+      <div id="printer-empty" class="empty">
+        Nie wybrano drukarki. Kliknij <b>Szukaj w sieci</b> albo wpisz adres IP poniżej.
+      </div>
+
+      <div id="scan-results" class="scan-results hidden"></div>
+
+      <details class="manual">
+        <summary>Wpisz adres IP ręcznie</summary>
+        <div class="row">
+          <input id="manual-ip" type="text" placeholder="np. 192.168.1.50" spellcheck="false" />
+          <button class="btn secondary" id="btn-manual">Połącz</button>
+        </div>
+      </details>
+    </section>
+
+    <!-- Tusz -->
+    <section class="card" id="card-ink">
+      <div class="card-head"><h2>Tusz</h2></div>
+      <div id="inks" class="inks"><div class="empty">Połącz się z drukarką, aby zobaczyć tusz.</div></div>
+    </section>
+
+    <!-- Drukowanie -->
+    <section class="card wide" id="card-print">
+      <div class="card-head"><h2>Drukuj</h2></div>
+
+      <div class="drop" id="drop">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 20h16"/></svg>
+        <div><b>Przeciągnij pliki tutaj</b></div>
+        <div class="muted">PDF, zdjęcia (JPG, PNG, WEBP, BMP, GIF)</div>
+        <button class="btn" id="btn-pick">Wybierz pliki…</button>
+      </div>
+
+      <ul class="files" id="files"></ul>
+
+      <div class="options">
+        <div class="opt">
+          <label>Liczba kopii</label>
+          <div class="stepper">
+            <button class="icon-btn" id="copies-minus" title="Mniej">−</button>
+            <input id="copies" type="number" min="1" max="99" value="1" />
+            <button class="icon-btn" id="copies-plus" title="Więcej">+</button>
+          </div>
+        </div>
+        <div class="opt">
+          <label>Kolor</label>
+          <div class="segmented" id="color-seg">
+            <button data-color="1" class="active">Kolorowo</button>
+            <button data-color="0">Czarno-biało</button>
+          </div>
+        </div>
+        <div class="opt">
+          <label class="check"><input type="checkbox" id="fit" checked /> Dopasuj do strony</label>
+        </div>
+        <div class="opt grow"></div>
+        <button class="btn primary big" id="btn-print" disabled>Drukuj</button>
+      </div>
+    </section>
+
+    <!-- Kolejka -->
+    <section class="card wide" id="card-jobs">
+      <div class="card-head">
+        <h2>Kolejka zadań</h2>
+        <button class="icon-btn" id="btn-jobs" title="Odśwież kolejkę">
+          <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg>
+        </button>
+      </div>
+      <ul class="jobs" id="jobs"><li class="empty">Kolejka jest pusta.</li></ul>
+    </section>
+  </main>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

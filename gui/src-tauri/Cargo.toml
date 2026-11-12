@@ -1,0 +1,25 @@
+[package]
+name = "epson-druk-gui"
+version = "0.2.0"
+edition = "2021"
+description = "Epson Druk – drukowanie bezprzewodowe na Epson L3150"
+
+[[bin]]
+name = "epson-druk-gui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+epson-druk = { path = "../.." }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

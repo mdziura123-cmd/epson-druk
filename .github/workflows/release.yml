@@ -1,40 +1,81 @@
-name: Release
+name: Build
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  cli:
+    name: Wersja terminalowa
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Instalacja Rusta (musl – statyczna binarka)
+      - name: Rust musl
         run: |
           sudo apt-get update && sudo apt-get install -y musl-tools
           rustup target add x86_64-unknown-linux-musl
-      - name: Testy
-        run: cargo test
-      - name: Budowanie
-        run: cargo build --release --target x86_64-unknown-linux-musl
+      - run: cargo test
+      - run: cargo build --release --target x86_64-unknown-linux-musl
       - name: Pakowanie
         run: |
           mkdir dist
           cp target/x86_64-unknown-linux-musl/release/epson-druk dist/
           cp README.md dist/
           tar -czf epson-druk-linux-x86_64.tar.gz -C dist .
-      - name: Publikacja wydania
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: epson-druk-linux-x86_64.tar.gz
-      - name: Artefakt (uruchomienie ręczne)
-        if: "!startsWith(github.ref, 'refs/tags/')"
-        uses: actions/upload-artifact@v4
-        with:
-          name: epson-druk-linux-x86_64
+          name: cli
           path: epson-druk-linux-x86_64.tar.gz
+
+  appimage:
+    name: Aplikacja z okienkiem (AppImage)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Biblioteki systemowe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libssl-dev libxdo-dev patchelf file build-essential
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+      - name: Budowanie AppImage
+        working-directory: gui
+        run: tauri build --bundles appimage
+      - name: Nazwa pliku
+        run: |
+          f=$(ls gui/src-tauri/target/release/bundle/appimage/*.AppImage | head -n1)
+          cp "$f" Epson-Druk-x86_64.AppImage
+          chmod +x Epson-Druk-x86_64.AppImage
+          ls -la Epson-Druk-x86_64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: Epson-Druk-x86_64.AppImage
+
+  release:
+    name: Publikacja w Releases
+    if: github.event_name == 'release'
+    needs: [cli, appimage]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Epson-Druk-x86_64.AppImage
+            epson-druk-linux-x86_64.tar.gz
