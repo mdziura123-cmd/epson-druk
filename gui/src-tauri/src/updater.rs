@@ -219,8 +219,57 @@ pub fn restart(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------
+// Sterownik Epson ESC/P-R
+// ---------------------------------------------------------------------
+
+pub const ESCPR_PAGE: &str =
+    "https://support.epson.net/linux/Printer/LSB_less_distribution_pages/en/escpr.php";
+const ESCPR_DOWNLOAD_INFO: &str = "https://download.ebz.epson.net/dsc/du/02/DriverDownloadInfo.do?LG2=JA&CN2=US&CTI=176&PRN=Linux%20rpm%2064bit%20package&OSC=LX";
+
+/// Wyszukuje w tekście numery wersji po „escpr-”, np. „escpr-1.8.6-1” → „1.8.6”.
+pub fn find_escpr_version(text: &str) -> Option<String> {
+    let mut best: Option<String> = None;
+    for (i, _) in text.match_indices("escpr-") {
+        let rest = &text[i + 6..];
+        let ver: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let ver = ver.trim_end_matches('.').to_string();
+        if ver.split('.').count() >= 2 && ver.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            if best.as_deref().map(|b| is_newer(&ver, b)).unwrap_or(true) {
+                best = Some(ver);
+            }
+        }
+    }
+    best
+}
+
+/// Najnowsza wersja sterownika ze strony Epsona (`None` gdy nie da się ustalić).
+pub fn latest_escpr() -> Option<String> {
+    let text = agent().get(ESCPR_DOWNLOAD_INFO).call().ok()?.into_string().ok()?;
+    find_escpr_version(&text)
+}
+
+/// Zainstalowana wersja sterownika (rpm), np. „1.8.6”.
+pub fn installed_escpr() -> Option<String> {
+    let out = crate::host_command("rpm")
+        .args(["-q", "--qf", "%{VERSION}", "epson-inkjet-printer-escpr"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!v.is_empty() && v.chars().next()?.is_ascii_digit()).then_some(v)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wersja_sterownika() {
+        let t = "<a href=\"x/epson-inkjet-printer-escpr-1.8.6-1.x86_64.rpm\">escpr-1.8.6-1</a> old escpr-1.7.21-1";
+        assert_eq!(super::find_escpr_version(t).as_deref(), Some("1.8.6"));
+    }
+
     use super::*;
     #[test]
     fn wersje() {

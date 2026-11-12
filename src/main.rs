@@ -28,8 +28,29 @@ fn cmd_szukaj() -> Result<(), String> {
     Ok(())
 }
 
+fn cmd_status_snmp(ip: IpAddr) -> Result<(), String> {
+    let d = snmp::device_state(ip)
+        .ok_or("drukarka nie obsługuje IPP i nie odpowiada na SNMP")?;
+    println!("Drukarka : {}", web_model(ip).unwrap_or_else(|| "EPSON".into()));
+    println!("Stan     : {}", d.state.unwrap_or_else(|| "nieznany".into()));
+    if !d.reasons.is_empty() {
+        println!("Uwagi    : {}", d.reasons.join(", "));
+    }
+    for (name, pct, _) in &d.inks {
+        let p = *pct as usize;
+        println!("  {name:<14} [{}{}] {p:>3}%", "█".repeat(p / 5), "░".repeat(20 - p / 5));
+    }
+    if let Some(fw) = snmp::firmware_version(ip) {
+        println!("Firmware : {fw}");
+    }
+    Ok(())
+}
+
 fn cmd_status(ip: IpAddr) -> Result<(), String> {
-    let s = status(ip)?;
+    let s = match status(ip) {
+        Ok(s) => s,
+        Err(_) => return cmd_status_snmp(ip),
+    };
     println!("Drukarka : {}", s.model);
     println!("Adres    : {}", s.uri);
     println!("Stan     : {}", s.state);

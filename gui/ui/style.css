@@ -154,6 +154,16 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .ink .pct { font-weight: 700; font-variant-numeric: tabular-nums; }
 .ink-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
 
+/* Sterownik i oprogramowanie */
+.sysinfo { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.sys-row { display: flex; align-items: center; gap: 8px; }
+.sys-label { color: var(--muted); min-width: 160px; }
+.sys-val { flex: 1; }
+.sys-val.ok { color: var(--ok); }
+.sys-val.upd { color: var(--busy); font-weight: 600; }
+.link-btn { border: none; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+.link-btn:hover { background: var(--accent-soft); }
+
 /* Konserwacja */
 .maint { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 .maint-title { font-size: 12px; color: var(--muted); font-weight: 600; }

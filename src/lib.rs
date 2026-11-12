@@ -2,6 +2,8 @@
 //!
 //! Tylko biblioteka standardowa Rusta. Używana przez wersję terminalową i aplikację z okienkiem.
 
+pub mod snmp;
+
 use std::env;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};

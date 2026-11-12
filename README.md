@@ -23,6 +23,9 @@ Co potrafi:
 - PDF-y zamienia na obrazy, gdy drukarka nie przyjmuje PDF (potrzebny `pdftoppm` lub `gs` w systemie),
 - PNG, WEBP, BMP i GIF zamienia na JPEG,
 - kolejka zadań z możliwością anulowania,
+- **poziom tuszu** i stan drukarki odczytywane przez SNMP (także dla L3150 bez IPP),
+- **powiadomienia systemowe**: brak papieru, zacięty papier, otwarta pokrywa, kończący się tusz,
+- informacja o **nowej wersji sterownika Epson** oraz wersja oprogramowania drukarki z przyciskiem do panelu drukarki,
 - konserwacja: **test dysz** i **czyszczenie głowicy** jednym kliknięciem (karta „Tusz i konserwacja”),
 - przycisk **Aktualizacje** w prawym górnym rogu.
 

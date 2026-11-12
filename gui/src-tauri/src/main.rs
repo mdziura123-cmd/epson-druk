@@ -48,6 +48,18 @@ struct StatusDto {
     queue_ready: bool,
     /// Tryb cups: brak sterownika Epsona w systemie.
     driver_missing: bool,
+    /// Wersja oprogramowania drukarki (SNMP), jeśli dostępna.
+    firmware: Option<String>,
+    /// Czy poziomy tuszu pochodzą z drukarki (SNMP / IPP).
+    ink_live: bool,
+}
+
+#[derive(Serialize)]
+struct DriverInfoDto {
+    installed: Option<String>,
+    latest: Option<String>,
+    update_available: bool,
+    page: String,
 }
 
 #[derive(Serialize)]
@@ -229,6 +241,44 @@ fn uses_ipp(ip: IpAddr) -> bool {
     port_open(ip, ipp::IPP_PORT)
 }
 
+static FIRMWARE: std::sync::Mutex<Option<(IpAddr, Option<String>)>> = std::sync::Mutex::new(None);
+
+/// Wersja firmware – pytamy drukarkę tylko raz na adres.
+fn firmware_cached(ip: IpAddr) -> Option<String> {
+    let mut g = FIRMWARE.lock().ok()?;
+    if let Some((cip, fw)) = g.as_ref() {
+        if *cip == ip {
+            return fw.clone();
+        }
+    }
+    let fw = ipp::snmp::firmware_version(ip);
+    *g = Some((ip, fw.clone()));
+    fw
+}
+
+/// Uzupełnia stan o dane z SNMP (tusz, brak papieru, zacięcie…).
+fn merge_snmp(ip: IpAddr, dto: &mut StatusDto) {
+    let Some(dev) = ipp::snmp::device_state(ip) else { return };
+    if !dev.inks.is_empty() && (dto.inks.is_empty() || dto.inks.iter().all(|i| i.level.is_none())) {
+        dto.inks = dev
+            .inks
+            .into_iter()
+            .map(|(name, pct, color)| InkDto { name, level: Some(pct), color: Some(color) })
+            .collect();
+        dto.ink_live = true;
+    }
+    for r in dev.reasons {
+        if !dto.reasons.contains(&r) {
+            dto.reasons.push(r);
+        }
+    }
+    if let Some(st) = dev.state {
+        if st == "czyszczenie" || st == "błąd" || dto.state == "nieznany" || dto.state == "wymaga konfiguracji" && dto.queue_ready {
+            dto.state = st;
+        }
+    }
+}
+
 fn cups_status(ip: IpAddr, ip_str: String) -> Result<StatusDto, String> {
     if !port_open(ip, ipp::RAW_PORT) {
         return Err(format!(
@@ -257,6 +307,8 @@ fn cups_status(ip: IpAddr, ip_str: String) -> Result<StatusDto, String> {
         mode: "cups".into(),
         queue_ready: ready,
         driver_missing,
+        firmware: None,
+        ink_live: false,
     })
 }
 
@@ -279,6 +331,20 @@ async fn setup_printer(ip: String, model: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn status(ip: String) -> Result<StatusDto, String> {
+    let addr = parse_ip(&ip)?;
+    let mut dto = status_inner(ip).await?;
+    blocking(move || {
+        merge_snmp(addr, &mut dto);
+        if dto.mode == "ipp" && dto.inks.iter().any(|i| i.level.is_some()) {
+            dto.ink_live = true;
+        }
+        dto.firmware = firmware_cached(addr);
+        Ok(dto)
+    })
+    .await
+}
+
+async fn status_inner(ip: String) -> Result<StatusDto, String> {
     let addr = parse_ip(&ip)?;
     let ip2 = ip.clone();
     let s = match blocking(move || {
@@ -309,6 +375,8 @@ async fn status(ip: String) -> Result<StatusDto, String> {
         mode: "ipp".into(),
         queue_ready: true,
         driver_missing: false,
+        firmware: None,
+        ink_live: false,
     })
 }
 
@@ -460,10 +528,39 @@ fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
     updater::restart(&app)
 }
 
-/// Otwiera stronę wydania w przeglądarce (tylko adresy GitHuba).
+#[tauri::command]
+async fn driver_info() -> Result<DriverInfoDto, String> {
+    blocking(|| {
+        let installed = updater::installed_escpr();
+        let latest = updater::latest_escpr();
+        let update_available = match (&installed, &latest) {
+            (Some(i), Some(l)) => updater::is_newer(l, i),
+            _ => false,
+        };
+        Ok(DriverInfoDto { installed, latest, update_available, page: updater::ESCPR_PAGE.into() })
+    })
+    .await
+}
+
+/// Czy adres to panel WWW drukarki w sieci lokalnej (http://<IP>/)?
+fn is_printer_panel(url: &str) -> bool {
+    url.strip_prefix("http://")
+        .and_then(|r| r.strip_suffix('/'))
+        .and_then(|h| h.parse::<IpAddr>().ok())
+        .map(|ip| match ip {
+            IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+            IpAddr::V6(_) => false,
+        })
+        .unwrap_or(false)
+}
+
+/// Otwiera stronę w przeglądarce (GitHub, Epson albo panel drukarki).
 #[tauri::command]
 fn open_page(url: String) -> Result<(), String> {
-    if !(url.starts_with("https://github.com/") || url.starts_with("https://support.epson.net/")) {
+    if !(url.starts_with("https://github.com/")
+        || url.starts_with("https://support.epson.net/")
+        || is_printer_panel(&url))
+    {
         return Err("niedozwolony adres".into());
     }
     host_command("xdg-open")
@@ -483,6 +580,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             load_printer,
             save_printer,
@@ -493,6 +591,7 @@ fn main() {
             print_file,
             setup_printer,
             maintenance,
+            driver_info,
             app_version,
             check_update,
             install_update,

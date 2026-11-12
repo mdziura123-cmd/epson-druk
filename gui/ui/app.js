@@ -3,6 +3,7 @@ const { invoke } = window.__TAURI__.core;
 const dialog = window.__TAURI__.dialog;
 const webview = window.__TAURI__.webview;
 const events = window.__TAURI__.event;
+const notif = window.__TAURI__.notification;
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -49,6 +50,9 @@ const REASONS = {
   'offline-report': 'Drukarka offline',
   'paused': 'Wstrzymana',
   'toner-low': 'Kończy się tusz',
+  'media-low': 'Kończy się papier',
+  'waste-ink-full': 'Pełny pojemnik na zużyty tusz – potrzebny serwis',
+  'fatal-error': 'Błąd drukarki – wyłącz ją i włącz ponownie',
 };
 function reasonText(r) {
   const key = r.replace(/-(report|warning)$/, '');
@@ -84,7 +88,9 @@ async function connect(ip, { silent = false } = {}) {
     await invoke('save_printer', { ip });
     renderPrinter();
     renderInks();
+    checkAlerts(st);
     refreshJobs();
+    if (!driverInfo) checkDriver();
     if (!silent) toast(`Połączono z ${st.model}`, 'ok');
   } catch (e) {
     setPill('Brak połączenia', 'bad');
@@ -98,6 +104,7 @@ async function connect(ip, { silent = false } = {}) {
 function renderPrinter() {
   const st = state.status;
   updateMaintButtons();
+  renderSysinfo();
   $('printer-empty').classList.toggle('hidden', !!st);
   $('printer-info').classList.toggle('hidden', !st);
   if (!st) return;
@@ -147,6 +154,7 @@ function renderPrinter() {
 function renderInks() {
   const box = $('inks');
   box.replaceChildren();
+  $('card-ink').querySelector('.ink-note')?.remove();
   const st = state.status;
   if (!st || !st.inks.length) {
     box.appendChild(el('div', 'empty',
@@ -174,12 +182,14 @@ function renderInks() {
     wrap.appendChild(el('div', 'name', inkName(ink.name)));
     box.appendChild(wrap);
   }
-  if (unknown) {
-    const card = $('card-ink');
-    card.querySelector('.ink-note')?.remove();
-    card.appendChild(el('div', 'ink-note',
-      '„?” – drukarka EcoTank nie mierzy tuszu. Sprawdź poziom w okienkach zbiorników.'));
-  }
+  const card = $('card-ink');
+  card.querySelector('.ink-note')?.remove();
+  const note = unknown
+    ? '„?” – drukarka nie podaje poziomu tego tuszu. Sprawdź go w okienkach zbiorników.'
+    : st.ink_live && /L3\d{3}|EcoTank|ET-/i.test(st.model)
+      ? 'Poziom szacowany przez drukarkę. Po uzupełnieniu tuszu zresetuj licznik na drukarce, żeby wskazania były dokładne.'
+      : '';
+  if (note) box.after(el('div', 'ink-note', note));
 }
 
 async function scan() {
@@ -364,6 +374,93 @@ async function refreshJobs() {
   }
 }
 
+// ---------------------------------------------------------------- alarmy
+const ALERTS = {
+  'media-empty': 'Brak papieru w drukarce – włóż papier, aby kontynuować.',
+  'media-jam': 'Papier się zaciął – wyjmij go delikatnie z drukarki.',
+  'cover-open': 'Pokrywa drukarki jest otwarta.',
+  'marker-supply-empty': 'Skończył się tusz – uzupełnij zbiornik.',
+  'waste-ink-full': 'Pojemnik na zużyty tusz jest pełny – potrzebny serwis.',
+};
+const alerted = new Set();
+
+async function notify(body) {
+  try {
+    let ok = await notif.isPermissionGranted();
+    if (!ok) ok = (await notif.requestPermission()) === 'granted';
+    if (ok) notif.sendNotification({ title: 'Epson Druk', body });
+  } catch (_) { /* brak powiadomień systemowych – zostaje komunikat w oknie */ }
+}
+
+function checkAlerts(st) {
+  const now = new Set(st.reasons);
+  for (const [key, msg] of Object.entries(ALERTS)) {
+    if (now.has(key) && !alerted.has(key)) {
+      alerted.add(key);
+      toast(msg, 'bad');
+      notify(msg);
+    } else if (!now.has(key) && alerted.has(key)) {
+      alerted.delete(key);
+      if (key === 'media-empty') toast('Papier włożony – drukarka gotowa', 'ok');
+    }
+  }
+  for (const ink of st.inks) {
+    const key = 'ink-low:' + ink.name;
+    if (ink.level !== null && ink.level !== undefined && ink.level <= 10 && ink.level > 0) {
+      if (!alerted.has(key)) {
+        alerted.add(key);
+        const msg = `Kończy się tusz: ${inkName(ink.name)} (${ink.level}%). Warto go uzupełnić.`;
+        toast(msg);
+        notify(msg);
+      }
+    } else if (ink.level > 20) {
+      alerted.delete(key);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- sterownik i firmware
+let driverInfo = null;
+
+function renderSysinfo() {
+  const st = state.status;
+  const showDriver = st && st.mode === 'cups' && !st.driver_missing;
+  $('row-driver').classList.toggle('hidden', !showDriver);
+  $('row-fw').classList.toggle('hidden', !st);
+  $('sysinfo').classList.toggle('hidden', !st);
+  if (!st) return;
+  $('fw-val').textContent = st.firmware || 'nieznana';
+  if (showDriver && driverInfo) {
+    const v = $('driver-val');
+    if (driverInfo.update_available) {
+      v.textContent = `${driverInfo.installed} → dostępna ${driverInfo.latest}`;
+      v.className = 'sys-val upd';
+      $('btn-driver-update').classList.remove('hidden');
+    } else if (driverInfo.installed) {
+      v.textContent = driverInfo.latest ? `${driverInfo.installed} (aktualny)` : driverInfo.installed;
+      v.className = 'sys-val' + (driverInfo.latest ? ' ok' : '');
+      $('btn-driver-update').classList.add('hidden');
+    } else {
+      v.textContent = 'zainstalowany';
+      v.className = 'sys-val';
+    }
+  }
+}
+
+async function checkDriver() {
+  if (!state.status || state.status.mode !== 'cups') return;
+  try {
+    const prev = driverInfo;
+    driverInfo = await invoke('driver_info');
+    renderSysinfo();
+    if (driverInfo.update_available && !(prev && prev.update_available)) {
+      const msg = `Dostępna nowa wersja sterownika Epson: ${driverInfo.latest} (masz ${driverInfo.installed}).`;
+      toast(msg);
+      notify(msg);
+    }
+  } catch (_) { /* brak internetu – pomijamy */ }
+}
+
 // ---------------------------------------------------------------- konserwacja
 async function runMaintenance(action) {
   if (!state.ip) return;
@@ -508,6 +605,13 @@ function bind() {
     }
   };
   $('btn-nozzle').onclick = () => runMaintenance('nozzle');
+  $('btn-driver-update').onclick = () =>
+    invoke('open_page', { url: (driverInfo && driverInfo.page) || 'https://support.epson.net/linux/Printer/LSB_less_distribution_pages/en/escpr.php' })
+      .catch((e) => toast(errText(e), 'bad'));
+  $('btn-panel').onclick = () => {
+    if (!state.ip) return;
+    invoke('open_page', { url: `http://${state.ip}/` }).catch((e) => toast(errText(e), 'bad'));
+  };
   $('btn-clean').onclick = () => runMaintenance('clean');
   $('btn-upd-install').onclick = installUpdate;
   $('btn-upd-close').onclick = () => { $('update-bar').classList.add('hidden'); $('update-notes').classList.add('hidden'); };
@@ -552,6 +656,7 @@ async function start() {
   updatePrintButton();
   invoke('app_version').then((v) => { $('app-version').textContent = v; }).catch(() => {});
   setTimeout(() => checkUpdate(), 3000); // sprawdź aktualizacje chwilę po starcie
+  setInterval(() => { checkUpdate(); checkDriver(); }, 6 * 60 * 60 * 1000); // i co 6 godzin
   const saved = await invoke('load_printer').catch(() => null);
   if (saved) {
     $('manual-ip').value = saved;
@@ -565,7 +670,7 @@ async function start() {
     if (state.ip && !state.printing) {
       refreshJobs();
       invoke('status', { ip: state.ip })
-        .then((st) => { state.status = st; renderPrinter(); })
+        .then((st) => { state.status = st; renderPrinter(); renderInks(); checkAlerts(st); })
         .catch(() => setPill('Brak połączenia', 'bad'));
     }
   }, 10000);
