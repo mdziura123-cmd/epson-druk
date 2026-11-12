@@ -300,7 +300,10 @@ const OPT_LABELS = {
   Borderless: 'Bez marginesów', Brightness: 'Jasność', Contrast: 'Kontrast', Saturation: 'Nasycenie',
 };
 const OPT_ORDER = ['PageSize', 'MediaType', 'Quality', 'PrintQuality', 'cupsPrintQuality', 'escprQuality', 'OutputMode'];
-const OPT_HIDDEN = ['Ink', 'ColorModel', 'ColorMode', 'PageRegion'];
+// Kolor ustawia przełącznik Kolorowo/Czarno-biało. Jasność, kontrast, nasycenie itp. robi edytor zdjęć –
+// opcje sterownika o tych nazwach filtry CUPS czytają jako procenty (Brightness=0 → czarna strona!).
+const OPT_HIDDEN = ['Ink', 'ColorModel', 'ColorMode', 'PageRegion',
+  'Brightness', 'Contrast', 'Saturation', 'Hue', 'Gamma', 'Sharpness'];
 const CHOICE_PL = {
   PLAIN: 'Papier zwykły', PMPHOTO: 'Fotograficzny błyszczący Premium', PSPHOTO: 'Fotograficzny półbłyszczący Premium',
   PMMATT: 'Matowy Premium', PHOTO: 'Fotograficzny błyszczący', GLOSSY: 'Błyszczący', PLATINA: 'Fotograficzny Ultra Premium',

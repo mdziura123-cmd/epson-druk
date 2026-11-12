@@ -4,6 +4,12 @@
 use crate::host_command;
 use std::path::Path;
 
+/// Opcje, których nigdy nie przekazujemy do `lp` (kolizja z opcjami obrazu filtrów CUPS).
+const BLOCKED_OPTIONS: &[&str] = &[
+    "Brightness", "Contrast", "Saturation", "Hue", "Gamma", "Sharpness",
+    "Ink", "ColorModel", "ColorMode", "PageRegion",
+];
+
 /// Nazwa kolejki tworzonej przez aplikację.
 pub const QUEUE: &str = "Epson_Druk";
 
@@ -260,11 +266,17 @@ pub fn print_ex(
         args.push("-o".into());
         args.push("fit-to-page".into());
     }
-    let known: Vec<String> = options().into_iter().map(|o| o.key).collect();
+    let known = options();
     for (k, v) in extra {
-        // tylko opcje, które sterownik naprawdę ma, i bez znaków specjalnych
+        // Tych nazw nie wysyłamy nigdy: filtry CUPS traktują je jako własne opcje obrazu
+        // w procentach (np. Brightness=0 daje całkowicie czarną stronę).
+        if BLOCKED_OPTIONS.iter().any(|b| b.eq_ignore_ascii_case(k)) {
+            continue;
+        }
+        // tylko opcje, które sterownik naprawdę ma, różne od domyślnych, bez znaków specjalnych
         let safe = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
-        if known.iter().any(|o| o == k) && safe(k) && safe(v) {
+        let Some(opt) = known.iter().find(|o| &o.key == k) else { continue };
+        if opt.default != *v && opt.choices.iter().any(|c| c == v) && safe(k) && safe(v) {
             args.push("-o".into());
             args.push(format!("{k}={v}"));
         }
